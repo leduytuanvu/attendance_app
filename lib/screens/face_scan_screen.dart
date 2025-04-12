@@ -38,17 +38,18 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   final TextEditingController _cccdController = TextEditingController();
 
   // Face angle tracking
-  Map<FaceAngle, bool> _angleDetected = {
+  final Map<FaceAngle, bool> _angleDetected = {
     FaceAngle.front: false,
     FaceAngle.left: false,
     FaceAngle.right: false,
     FaceAngle.up: false,
     FaceAngle.down: false,
   };
-  FaceAngle _currentRequestedAngle = FaceAngle.left; // Start with left angle instead of front
+  FaceAngle _currentRequestedAngle =
+      FaceAngle.front; // Start with front angle for better user experience
 
   // Combined face data from multiple angles
-  List<String> _faceDataFromAngles = [];
+  final List<String> _faceDataFromAngles = [];
 
   @override
   void initState() {
@@ -463,22 +464,22 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
     switch (requestedAngle) {
       case FaceAngle.front:
-        // Face is looking straight ahead - more lenient threshold
-        return yAngle.abs() < 20 && zAngle.abs() < 20;
+        // Face is looking straight ahead - more precise threshold
+        return yAngle.abs() < 15 && zAngle.abs() < 15;
       case FaceAngle.left:
-        // Face is turned to the left - more lenient threshold
-        // Fixed: Positive Y angle means the face is turned to the left from camera perspective
-        return yAngle > 15;
+        // Face is turned to the left
+        // Positive Y angle means the face is turned to the left from camera perspective
+        return yAngle > 20 && yAngle < 45 && zAngle.abs() < 15;
       case FaceAngle.right:
-        // Face is turned to the right - more lenient threshold
-        // Fixed: Negative Y angle means the face is turned to the right from camera perspective
-        return yAngle < -15;
+        // Face is turned to the right
+        // Negative Y angle means the face is turned to the right from camera perspective
+        return yAngle < -20 && yAngle > -45 && zAngle.abs() < 15;
       case FaceAngle.up:
-        // Face is looking up - more sensitive threshold
-        return zAngle < -5;  // Changed from -10 to -5 to make it more sensitive
+        // Face is looking up - extremely lenient threshold
+        return zAngle < -5 && yAngle.abs() < 25;
       case FaceAngle.down:
-        // Face is looking down - more sensitive threshold
-        return zAngle > 5;   // Changed from 10 to 5 to make it more sensitive
+        // Face is looking down - extremely lenient threshold
+        return zAngle > 5 && yAngle.abs() < 25;
     }
   }
 
@@ -491,41 +492,61 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   // Move to the next angle or complete if all angles are detected
   void _moveToNextAngle() {
-    // Check if we have enough angles detected (at least 3 angles)
-    int detectedAnglesCount = _angleDetected.values.where((detected) => detected).length;
-    bool sufficientAnglesDetected = detectedAnglesCount >= 3;
+    // For registration, require all 5 angles to be detected
+    // For identification, 3 angles would be sufficient
+    bool allRequiredAnglesDetected = true;
     
-    if (sufficientAnglesDetected) {
-      // Sufficient angles detected, show confirmation
+    // Check if all required angles are detected
+    if (!widget.isIdentifying) {
+      // For registration, require all angles including up and down
+      for (var angle in FaceAngle.values) {
+        if (!_angleDetected[angle]!) {
+          allRequiredAnglesDetected = false;
+          break;
+        }
+      }
+    } else {
+      // For identification, at least 3 angles are sufficient
+      int detectedAnglesCount = _angleDetected.values.where((detected) => detected).length;
+      allRequiredAnglesDetected = detectedAnglesCount >= 3;
+    }
+
+    if (allRequiredAnglesDetected) {
+      // All required angles detected, show confirmation
       if (_controller?.value.isStreamingImages ?? false) {
         _controller?.stopImageStream();
       }
-      
+
       setState(() {
         _showConfirmation = true;
       });
       return;
     }
+
+    // Define a logical sequence for face angle detection
+    // Start with front, then left/right, then up/down
+    List<FaceAngle> angleSequence = [
+      FaceAngle.front,
+      FaceAngle.left,
+      FaceAngle.right,
+      FaceAngle.up,
+      FaceAngle.down,
+    ];
     
-    // Find the next angle to detect, skipping front angle initially
-    FaceAngle nextAngle = FaceAngle.left; // Default to left instead of front
-    
-    // Skip front angle and start with left/right angles
-    if (!_angleDetected[FaceAngle.left]!) {
-      nextAngle = FaceAngle.left;
-    } else if (!_angleDetected[FaceAngle.right]!) {
-      nextAngle = FaceAngle.right;
-    } else if (!_angleDetected[FaceAngle.up]!) {
-      nextAngle = FaceAngle.up;
-    } else if (!_angleDetected[FaceAngle.down]!) {
-      nextAngle = FaceAngle.down;
-    } else if (!_angleDetected[FaceAngle.front]!) {
-      // Only check front angle if all others are done
-      nextAngle = FaceAngle.front;
+    // Find the next undetected angle in the sequence
+    FaceAngle? nextAngle;
+    for (var angle in angleSequence) {
+      if (!_angleDetected[angle]!) {
+        nextAngle = angle;
+        break;
+      }
     }
     
+    // Default to front if all angles have been attempted
+    nextAngle ??= FaceAngle.front;
+    
     setState(() {
-      _currentRequestedAngle = nextAngle;
+      _currentRequestedAngle = nextAngle!;
       _faceDetected = false;
     });
   }
@@ -574,8 +595,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         _angleDetected[angle] = false;
       }
 
-      // Start with left angle instead of front
-      _currentRequestedAngle = FaceAngle.left;
+      // Start with front angle for better user experience
+      _currentRequestedAngle = FaceAngle.front;
       _faceDataFromAngles.clear();
     });
 

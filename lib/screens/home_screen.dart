@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:attendance_app/screens/register_screen.dart';
 import 'package:attendance_app/screens/checkin_screen.dart';
+import 'package:attendance_app/screens/registered_faces_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -80,6 +81,33 @@ class HomeScreen extends StatelessWidget {
                     SizedBox(width: 10),
                     Text(
                       'Điểm danh (Check In)',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: 20),
+              // View Registered Faces button
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const RegisteredFacesScreen()),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                  minimumSize: const Size(double.infinity, 60),
+                  backgroundColor: Colors.orange,
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.people_alt_outlined, size: 28),
+                    SizedBox(width: 10),
+                    Text(
+                      'Xem Khuôn Mặt Đã Đăng Ký',
                       style: TextStyle(fontSize: 18),
                     ),
                   ],
