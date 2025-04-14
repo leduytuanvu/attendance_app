@@ -1,0 +1,2 @@
+C:/Users/leduytuanvu/Desktop/attendance_app/android/app/.cxx/RelWithDebInfo/g3l736u5/x86/CMakeFiles/edit_cache.dir
+C:/Users/leduytuanvu/Desktop/attendance_app/android/app/.cxx/RelWithDebInfo/g3l736u5/x86/CMakeFiles/rebuild_cache.dir

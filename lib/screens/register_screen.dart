@@ -1,10 +1,7 @@
 import 'package:attendance_app/models/user_model.dart';
-import 'package:attendance_app/screens/checkin_screen.dart'; // Import CheckinScreen
 import 'package:attendance_app/screens/face_scan_screen.dart'; // Import FaceScanScreen
-import 'package:attendance_app/services/location_service.dart'; // Import LocationService
 import 'package:attendance_app/services/user_service.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart'; // Import Geolocator
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -20,7 +17,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _cccdController = TextEditingController();
   // Placeholder for face data - will be updated later
   bool _faceScanned = false; // Use boolean to track scan success
-  
+
   // Removed location data
 
   @override
@@ -50,7 +47,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   // Store face data for registration
   String? _faceData;
   List<String>? _allFaceData;
-  
+
   // Removed location functionality
 
   Future<void> _scanFace() async {
@@ -155,7 +152,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Registration successful!'),
+          content: Text('Đăng ký thành công!'),
           backgroundColor: Colors.green,
           duration: Duration(seconds: 2),
         ),
@@ -176,28 +173,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
         context: context,
         builder: (BuildContext context) {
           return AlertDialog(
-            title: const Text('Registration Successful'),
-            content: const Text('Do you want to check in now?'),
+            title: const Text('Đăng ký thành công'),
+            // content: const Text('Do you want to check in now?'),
             actions: [
               TextButton(
                 onPressed: () {
-                  Navigator.pop(context); // Close dialog
+                  Navigator.pop(context);
+                  Navigator.pop(context, true);
                 },
-                child: const Text('No'),
+                child: const Text('Đóng'),
               ),
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context); // Close dialog
-                  // Navigate to CheckinScreen without replacing the RegisterScreen
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) =>
-                            CheckinScreen(userName: name, cccd: cccd)),
-                  );
-                },
-                child: const Text('Yes'),
-              ),
+              // TextButton(
+              //   onPressed: () {
+              //     Navigator.pop(context); // Close dialog
+              //     // Navigate to CheckinScreen without replacing the RegisterScreen
+              //     Navigator.push(
+              //       context,
+              //       MaterialPageRoute(
+              //           builder: (context) =>
+              //               CheckinScreen(userName: name, cccd: cccd)),
+              //     );
+              //   },
+              //   child: const Text('Yes'),
+              // ),
             ],
           );
         },
@@ -209,7 +207,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Register User'),
+        title: const Text('Đăng ký người dùng mới'),
+        centerTitle: true,
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -220,11 +219,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
             children: [
               TextFormField(
                 controller: _nameController,
-                decoration:
-                    const InputDecoration(labelText: 'Họ và Tên (Name)'),
+                decoration: const InputDecoration(labelText: 'Họ và tên'),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
-                    return 'Please enter your name';
+                    return 'Họ và tên không được để trống';
                   }
                   return null;
                 },
@@ -233,7 +231,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               TextFormField(
                 controller: _dobController,
                 decoration: const InputDecoration(
-                  labelText: 'Ngày tháng năm sinh (Date of Birth)',
+                  labelText: 'Ngày sinh',
                   hintText: 'YYYY-MM-DD',
                   suffixIcon: Icon(Icons.calendar_today),
                 ),
@@ -241,7 +239,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 onTap: _selectDate,
                 validator: (value) {
                   if (value == null || value.isEmpty) {
-                    return 'Please select your date of birth';
+                    return 'Ngày sinh không được để trống';
                   }
                   return null;
                 },
@@ -249,11 +247,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _cccdController,
-                decoration:
-                    const InputDecoration(labelText: 'CCCD/CMND (Citizen ID)'),
+                decoration: const InputDecoration(labelText: 'CCCD/CMND'),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
-                    return 'Please enter your Citizen ID';
+                    return 'CCCD/CMND không được để trống';
                   }
                   // Add more specific validation if needed
                   return null;
@@ -266,8 +263,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 icon: Icon(_faceScanned
                     ? Icons.check_circle
                     : Icons.face_retouching_natural),
-                label: Text(
-                    _faceScanned ? 'Face Scanned Successfully' : 'Scan Face'),
+                label: Text(_faceScanned
+                    ? 'Đã quét khuôn mặt thành công'
+                    : 'Quét khuôn mặt'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _faceScanned
                       ? Colors.green
@@ -279,7 +277,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 24),
               ElevatedButton(
                 onPressed: _registerUser,
-                child: const Text('Register'),
+                child: const Text('Đăng ký'),
               ),
             ],
           ),
