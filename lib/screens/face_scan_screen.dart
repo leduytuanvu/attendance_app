@@ -63,9 +63,30 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   @override
   void dispose() {
-    _controller?.dispose();
-    _faceDetector?.close();
+    // Cancel any timers first
     _detectionTimer?.cancel();
+    
+    // Close the face detector
+    if (_faceDetector != null) {
+      _faceDetector!.close();
+      _faceDetector = null;
+    }
+    
+    // Dispose of the camera controller safely
+    if (_controller != null) {
+      if (_controller!.value.isStreamingImages) {
+        _controller!.stopImageStream().then((_) {
+          _controller!.dispose();
+        }).catchError((e) {
+          print("Error stopping image stream: $e");
+          _controller!.dispose();
+        });
+      } else {
+        _controller!.dispose();
+      }
+      _controller = null;
+    }
+    
     super.dispose();
   }
 
@@ -544,12 +565,38 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     bool frameReceived = false;
     
     try {
+      // Check if controller is still valid
+      if (_controller == null || !_controller!.value.isInitialized) {
+        print("Camera controller is null or not initialized");
+        if (!completer.isCompleted) {
+          completer.complete(null);
+        }
+        return completer.future;
+      }
+      
       // Since we can't directly access the stream callback, we need to stop and restart the stream
       // First, stop the current stream
-      await _controller!.stopImageStream();
+      if (_controller!.value.isStreamingImages) {
+        await _controller!.stopImageStream();
+      } else {
+        print("Camera is not streaming images");
+        if (!completer.isCompleted) {
+          completer.complete(null);
+        }
+        return completer.future;
+      }
       
       // Wait a short moment to ensure the stream is fully stopped
       await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Check again if controller is still valid
+      if (_controller == null || !_controller!.value.isInitialized) {
+        print("Camera controller became invalid after stopping stream");
+        if (!completer.isCompleted) {
+          completer.complete(null);
+        }
+        return completer.future;
+      }
       
       // Start a new stream to get a single frame
       await _controller!.startImageStream((image) {
@@ -564,11 +611,13 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
           completer.complete(image);
           
           // Stop the stream after getting the frame
-          _controller!.stopImageStream();
+          if (_controller != null && _controller!.value.isInitialized && _controller!.value.isStreamingImages) {
+            _controller!.stopImageStream();
+          }
           
           // Restart the original detection stream after a short delay
           Future.delayed(const Duration(milliseconds: 100), () {
-            if (_controller != null && mounted) {
+            if (_controller != null && mounted && _controller!.value.isInitialized) {
               _startDetectionLoop();
             }
           });
@@ -582,7 +631,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       }
       
       // Make sure we restart the detection stream if there was an error
-      if (_controller != null && mounted) {
+      if (_controller != null && mounted && _controller!.value.isInitialized) {
         Future.delayed(const Duration(milliseconds: 100), () {
           _startDetectionLoop();
         });
@@ -696,12 +745,34 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
           
           // Return result to previous screen with a more robust approach
           if (mounted) {
-            // Use a safer navigation approach to prevent returning to home screen
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                Navigator.of(context).pop(resultData);
-              }
-            });
+            try {
+              // Use a safer navigation approach to prevent returning to home screen
+              Navigator.of(context).pop(resultData);
+            } catch (e) {
+              print("First navigation attempt failed: $e");
+              
+              // Try again with a different approach
+              Future.delayed(const Duration(milliseconds: 100), () {
+                if (mounted) {
+                  try {
+                    Navigator.pop(context, resultData);
+                  } catch (e2) {
+                    print("Second navigation attempt failed: $e2");
+                    
+                    // Last resort - use a post-frame callback
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        try {
+                          Navigator.of(context).pop(resultData);
+                        } catch (e3) {
+                          print("Third navigation attempt failed: $e3");
+                        }
+                      }
+                    });
+                  }
+                }
+              });
+            }
           }
         } catch (navError) {
           print("Navigation error in _confirmFaceDetection: $navError");

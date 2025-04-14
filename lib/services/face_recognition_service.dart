@@ -43,51 +43,77 @@ class FaceRecognitionService {
       // Verify the model file exists in assets
       try {
         final modelPath = 'assets/models/face_recognition_model.tflite';
-        final ByteData modelData = await rootBundle.load(modelPath);
         
-        // Check if the model data is valid (at least has a minimum size)
-        if (modelData.lengthInBytes < 1000) {
-          print('Model file is too small, might be corrupted: ${modelData.lengthInBytes} bytes');
-          throw Exception('Model file is too small, might be corrupted');
-        }
-        
-        // Configure interpreter options
-        final options = InterpreterOptions()
-          ..threads = 4 // Use multiple threads for better performance
-          ..useNnApiForAndroid = true; // Use Android Neural Networks API if available
-        
+        // First check if the model file exists and has a reasonable size
         try {
-          // Try to create interpreter directly from ByteData
-          _interpreter = await Interpreter.fromBuffer(
-            modelData.buffer.asUint8List(), 
-            options: options
-          );
+          final ByteData modelData = await rootBundle.load(modelPath);
           
+          // Check if the model data is valid (at least has a minimum size)
+          if (modelData.lengthInBytes < 1000) {
+            print('Model file is too small, might be corrupted: ${modelData.lengthInBytes} bytes');
+            throw Exception('Model file is too small, might be corrupted');
+          }
+          
+          // Configure interpreter options
+          final options = InterpreterOptions()
+            ..threads = 4 // Use multiple threads for better performance
+            ..useNnApiForAndroid = true; // Use Android Neural Networks API if available
+          
+          try {
+            // Try to create interpreter directly from ByteData
+            _interpreter = await Interpreter.fromBuffer(
+              modelData.buffer.asUint8List(), 
+              options: options
+            );
+            
+            _isInitialized = true;
+            print('Face recognition model initialized successfully directly from assets');
+            return;
+          } catch (bufferError) {
+            print('Buffer loading failed: $bufferError');
+            // Continue to file-based loading
+          }
+          
+          // Alternative: Load model via temporary file
+          final tempFile = await _loadModelToTempFile();
+          
+          // Verify the temp file exists and has content
+          if (!await tempFile.exists() || await tempFile.length() < 1000) {
+            print('Temp file is invalid or too small: ${await tempFile.length()} bytes');
+            throw Exception('Temp file is invalid or too small');
+          }
+          
+          // Create interpreter from file
+          _interpreter = await Interpreter.fromFile(tempFile, options: options);
           _isInitialized = true;
-          print('Face recognition model initialized successfully directly from assets');
-          return;
-        } catch (bufferError) {
-          print('Buffer loading failed: $bufferError');
-          // Continue to file-based loading
+          
+          print('Face recognition model initialized successfully from temp file');
+        } catch (e) {
+          print('Model file loading error: $e');
+          throw Exception('Model file loading error: $e');
         }
-        
-        // Alternative: Load model via temporary file
-        final tempFile = await _loadModelToTempFile();
-        
-        // Verify the temp file exists and has content
-        if (!await tempFile.exists() || await tempFile.length() < 1000) {
-          print('Temp file is invalid or too small: ${await tempFile.length()} bytes');
-          throw Exception('Temp file is invalid or too small');
-        }
-        
-        // Create interpreter from file
-        _interpreter = await Interpreter.fromFile(tempFile, options: options);
-        _isInitialized = true;
-        
-        print('Face recognition model initialized successfully from temp file');
       } catch (assetError) {
         print('Asset loading failed: $assetError');
-        throw assetError; // Re-throw to be caught by the outer try-catch
+        
+        // Try to create a dummy model for testing purposes
+        try {
+          print('Attempting to create a dummy model for testing...');
+          // This is just for debugging - in production you would handle this differently
+          final tempDir = await getTemporaryDirectory();
+          final dummyModelPath = '${tempDir.path}/dummy_model.tflite';
+          final dummyFile = File(dummyModelPath);
+          
+          // Check if we already have a dummy model
+          if (!await dummyFile.exists()) {
+            // Create a dummy file with some content
+            await dummyFile.writeAsString('This is a dummy model file for testing purposes.');
+          }
+          
+          throw Exception('Could not create dummy model');
+        } catch (dummyError) {
+          print('Dummy model creation failed: $dummyError');
+          throw assetError; // Re-throw the original error
+        }
       }
     } catch (e) {
       print('Error initializing face recognition model: $e');
