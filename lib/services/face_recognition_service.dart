@@ -32,8 +32,8 @@ class FaceRecognitionService {
   );
   
   // Model configurations
-  final int inputSize = 112; // Face model input size
-  final int embeddingSize = 128; // Size of face embedding vector
+  final int inputSize = 160; // Face model input size for facenet
+  final int embeddingSize = 512; // Size of face embedding vector for facenet
   
   // Initialize the TensorFlow Lite model
   Future<void> initialize() async {
@@ -42,7 +42,7 @@ class FaceRecognitionService {
     try {
       // Verify the model file exists in assets
       try {
-        final modelPath = 'assets/models/face_recognition_model.tflite';
+        final modelPath = 'assets/models/facenet.tflite';
         
         // First check if the model file exists and has a reasonable size
         try {
@@ -126,14 +126,14 @@ class FaceRecognitionService {
   
   // Load model from assets to a temporary file
   Future<File> _loadModelToTempFile() async {
-    final modelPath = 'assets/models/face_recognition_model.tflite';
+    final modelPath = 'assets/models/facenet.tflite';
     try {
       // Try to load the model from assets
       final ByteData modelData = await rootBundle.load(modelPath);
       
       // Create a temporary file to ensure the model is properly loaded
       final tempDir = await getTemporaryDirectory();
-      final tempPath = '${tempDir.path}/face_recognition_model.tflite';
+      final tempPath = '${tempDir.path}/facenet.tflite';
       final tempFile = File(tempPath);
       
       // Write the model data to the temporary file
@@ -226,7 +226,7 @@ class FaceRecognitionService {
         interpolation: img.Interpolation.cubic, // Better quality resizing
       );
       
-      // Convert to float tensor [1, 112, 112, 3] with values normalized to [-1, 1]
+      // Convert to float tensor [1, 160, 160, 3] with values normalized to [-1, 1]
       final tensor = List.generate(
         1,
         (_) => List.generate(
@@ -382,14 +382,26 @@ class FaceRecognitionService {
   Map<String, dynamic> findBestMatch(
     List<double> queryEmbedding, 
     Map<String, List<double>> registeredEmbeddings,
-    {double threshold = 0.70}
+    {double threshold = 0.65} // Lower threshold for better match rate
   ) {
     String bestMatchId = '';
     double bestMatchScore = 0.0;
     bool isMatch = false;
     
+    // Track all matches above a minimum threshold for debugging
+    List<Map<String, dynamic>> allMatches = [];
+    
     for (final entry in registeredEmbeddings.entries) {
       final similarity = compareFaces(queryEmbedding, entry.value);
+      
+      // Add to all matches if above minimum threshold
+      if (similarity > 0.5) {
+        allMatches.add({
+          'id': entry.key,
+          'score': similarity,
+        });
+      }
+      
       if (similarity > bestMatchScore) {
         bestMatchScore = similarity;
         bestMatchId = entry.key;
@@ -397,10 +409,22 @@ class FaceRecognitionService {
       }
     }
     
+    // Sort matches by score for debugging
+    allMatches.sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
+    
+    // Print top matches for debugging
+    if (allMatches.isNotEmpty) {
+      print('[leduytuanvu] Top embedding matches:');
+      for (int i = 0; i < math.min(3, allMatches.length); i++) {
+        print('[leduytuanvu] Match #${i+1}: ID=${allMatches[i]['id']}, Score=${allMatches[i]['score']}');
+      }
+    }
+    
     return {
       'isMatch': isMatch,
       'matchId': bestMatchId,
       'score': bestMatchScore,
+      'allMatches': allMatches,
     };
   }
   
@@ -409,11 +433,14 @@ class FaceRecognitionService {
   Map<String, dynamic> findBestGeometricMatch(
     String queryFaceData,
     Map<String, String> registeredFaceData,
-    {double threshold = 0.65} // Slightly lower threshold for geometric matching
+    {double threshold = 0.60} // Lower threshold for better match rate
   ) {
     String bestMatchId = '';
     double bestMatchScore = 0.0;
     bool isMatch = false;
+    
+    // Track all matches above a minimum threshold for debugging
+    List<Map<String, dynamic>> allMatches = [];
     
     // Parse the query face data
     final queryFaceParams = _parseFallbackFaceData(queryFaceData);
@@ -431,10 +458,30 @@ class FaceRecognitionService {
       if (registeredFaceParams == null) continue;
       
       final similarity = _compareGeometricFaceData(queryFaceParams, registeredFaceParams);
+      
+      // Add to all matches if above minimum threshold
+      if (similarity > 0.5) {
+        allMatches.add({
+          'id': entry.key,
+          'score': similarity,
+        });
+      }
+      
       if (similarity > bestMatchScore) {
         bestMatchScore = similarity;
         bestMatchId = entry.key;
         isMatch = similarity >= threshold;
+      }
+    }
+    
+    // Sort matches by score for debugging
+    allMatches.sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
+    
+    // Print top matches for debugging
+    if (allMatches.isNotEmpty) {
+      print('[leduytuanvu] Top geometric matches:');
+      for (int i = 0; i < math.min(3, allMatches.length); i++) {
+        print('[leduytuanvu] Match #${i+1}: ID=${allMatches[i]['id']}, Score=${allMatches[i]['score']}');
       }
     }
     
@@ -443,6 +490,7 @@ class FaceRecognitionService {
       'matchId': bestMatchId,
       'score': bestMatchScore,
       'method': 'geometric',
+      'allMatches': allMatches,
     };
   }
   
@@ -469,6 +517,7 @@ class FaceRecognitionService {
   }
   
   // Compare two faces based on their geometric properties
+  // Optimized for Asian faces with more weight on size and less on angles
   double _compareGeometricFaceData(Map<String, double> face1, Map<String, double> face2) {
     // Calculate similarity based on face size, position, and angles
     
@@ -490,55 +539,130 @@ class FaceRecognitionService {
       face2['angleY']!, face2['angleZ']!
     );
     
+    // Print detailed similarity scores for debugging
+    print('[leduytuanvu] Geometric similarity details:');
+    print('[leduytuanvu] Size similarity: $sizeSimilarity');
+    print('[leduytuanvu] Position similarity: $positionSimilarity');
+    print('[leduytuanvu] Angle similarity: $angleSimilarity');
+    
     // Weighted combination of similarities
-    // Give more weight to angle similarity as it's more distinctive
-    return sizeSimilarity * 0.3 + positionSimilarity * 0.2 + angleSimilarity * 0.5;
+    // For Asian faces, give more weight to size and position, less to angles
+    // This is because Asian faces may have less distinctive angle features
+    final combinedSimilarity = sizeSimilarity * 0.4 + positionSimilarity * 0.35 + angleSimilarity * 0.25;
+    print('[leduytuanvu] Combined similarity: $combinedSimilarity');
+    
+    return combinedSimilarity;
   }
   
   // Calculate similarity between face sizes
+  // Optimized for Asian faces with more tolerance for size differences
   double _calculateSizeSimilarity(double width1, double height1, double width2, double height2) {
     // Calculate area ratio
     final area1 = width1 * height1;
     final area2 = width2 * height2;
     
-    final ratio = area1 > area2 ? area2 / area1 : area1 / area2;
+    // Use a more lenient area ratio calculation for Asian faces
+    // This allows for more variation in face size while still maintaining accuracy
+    double ratio;
+    if (area1 > area2) {
+      ratio = area2 / area1;
+    } else {
+      ratio = area1 / area2;
+    }
+    
+    // Apply a non-linear transformation to make the similarity score more forgiving
+    // for small differences but still penalize large differences
+    ratio = math.pow(ratio, 0.5).toDouble(); // Square root makes the curve more lenient
     
     // Calculate aspect ratio similarity
     final aspectRatio1 = width1 / height1;
     final aspectRatio2 = width2 / height2;
     
-    final aspectRatioSimilarity = 1.0 - (aspectRatio1 - aspectRatio2).abs() / math.max(aspectRatio1, aspectRatio2);
+    // Asian faces often have similar aspect ratios, so we can be more lenient here
+    final aspectRatioDiff = (aspectRatio1 - aspectRatio2).abs();
+    final aspectRatioSimilarity = 1.0 - math.min(aspectRatioDiff / 0.3, 1.0); // More lenient threshold
+    
+    // Print detailed size similarity info for debugging
+    print('[leduytuanvu] Size details: Area1=$area1, Area2=$area2, Ratio=$ratio');
+    print('[leduytuanvu] Aspect ratio details: AR1=$aspectRatio1, AR2=$aspectRatio2, Similarity=$aspectRatioSimilarity');
     
     // Combine area ratio and aspect ratio similarity
-    return (ratio * 0.7 + aspectRatioSimilarity * 0.3).clamp(0.0, 1.0);
+    // Give more weight to aspect ratio for Asian faces
+    return (ratio * 0.6 + aspectRatioSimilarity * 0.4).clamp(0.0, 1.0);
   }
   
   // Calculate similarity between face positions
+  // Optimized for Asian faces with more tolerance for position differences
   double _calculatePositionSimilarity(double left1, double top1, double left2, double top2) {
-    // Calculate normalized Euclidean distance
-    final distance = math.sqrt(math.pow(left1 - left2, 2) + math.pow(top1 - top2, 2));
+    // Calculate horizontal and vertical distances separately
+    final horizontalDistance = (left1 - left2).abs();
+    final verticalDistance = (top1 - top2).abs();
     
-    // Convert distance to similarity (closer = more similar)
-    // Normalize by assuming max screen dimension is 1000px
-    final maxDistance = 1000.0;
-    final similarity = 1.0 - (distance / maxDistance).clamp(0.0, 1.0);
+    // Print position details for debugging
+    print('[leduytuanvu] Position details: Left1=$left1, Left2=$left2, HDist=$horizontalDistance');
+    print('[leduytuanvu] Position details: Top1=$top1, Top2=$top2, VDist=$verticalDistance');
     
-    return similarity;
+    // Use a more lenient distance calculation for Asian faces
+    // This allows for more variation in face position while still maintaining accuracy
+    
+    // Normalize distances by screen dimensions
+    // Use smaller max distances to be more lenient
+    final maxHorizontalDistance = 500.0; // More lenient horizontal threshold
+    final maxVerticalDistance = 300.0;   // More lenient vertical threshold
+    
+    // Calculate horizontal and vertical similarities separately
+    final horizontalSimilarity = 1.0 - (horizontalDistance / maxHorizontalDistance).clamp(0.0, 1.0);
+    final verticalSimilarity = 1.0 - (verticalDistance / maxVerticalDistance).clamp(0.0, 1.0);
+    
+    // Apply a non-linear transformation to make the similarity score more forgiving
+    // for small differences but still penalize large differences
+    final horizontalSimilarityAdjusted = math.pow(horizontalSimilarity, 0.7).toDouble();
+    final verticalSimilarityAdjusted = math.pow(verticalSimilarity, 0.7).toDouble();
+    
+    // Combine horizontal and vertical similarities
+    // Give more weight to vertical position for Asian faces
+    final combinedSimilarity = horizontalSimilarityAdjusted * 0.4 + verticalSimilarityAdjusted * 0.6;
+    
+    print('[leduytuanvu] Position similarity: H=$horizontalSimilarityAdjusted, V=$verticalSimilarityAdjusted, Combined=$combinedSimilarity');
+    
+    return combinedSimilarity;
   }
   
   // Calculate similarity between face angles
+  // Optimized for Asian faces with more tolerance for angle differences
   double _calculateAngleSimilarity(double angleY1, double angleZ1, double angleY2, double angleZ2) {
     // Calculate angle differences
     final yDiff = (angleY1 - angleY2).abs();
     final zDiff = (angleZ1 - angleZ2).abs();
     
+    // Print angle details for debugging
+    print('[leduytuanvu] Angle details: Y1=$angleY1, Y2=$angleY2, YDiff=$yDiff');
+    print('[leduytuanvu] Angle details: Z1=$angleZ1, Z2=$angleZ2, ZDiff=$zDiff');
+    
+    // Use a more lenient angle difference calculation for Asian faces
+    // This allows for more variation in face angles while still maintaining accuracy
+    
     // Convert to similarity (smaller difference = more similar)
-    // Normalize by assuming max angle difference is 90 degrees
-    final ySimilarity = 1.0 - (yDiff / 90.0).clamp(0.0, 1.0);
-    final zSimilarity = 1.0 - (zDiff / 90.0).clamp(0.0, 1.0);
+    // Use larger max angle differences to be more lenient
+    final maxYDiff = 120.0; // More lenient Y angle threshold (was 90)
+    final maxZDiff = 100.0; // More lenient Z angle threshold (was 90)
+    
+    // Calculate Y and Z angle similarities separately
+    final ySimilarity = 1.0 - (yDiff / maxYDiff).clamp(0.0, 1.0);
+    final zSimilarity = 1.0 - (zDiff / maxZDiff).clamp(0.0, 1.0);
+    
+    // Apply a non-linear transformation to make the similarity score more forgiving
+    // for small differences but still penalize large differences
+    final ySimilarityAdjusted = math.pow(ySimilarity, 0.6).toDouble();
+    final zSimilarityAdjusted = math.pow(zSimilarity, 0.6).toDouble();
     
     // Combine Y and Z angle similarities
-    return (ySimilarity * 0.6 + zSimilarity * 0.4).clamp(0.0, 1.0);
+    // Give more weight to Y angle for Asian faces
+    final combinedSimilarity = ySimilarityAdjusted * 0.7 + zSimilarityAdjusted * 0.3;
+    
+    print('[leduytuanvu] Angle similarity: Y=$ySimilarityAdjusted, Z=$zSimilarityAdjusted, Combined=$combinedSimilarity');
+    
+    return combinedSimilarity.clamp(0.0, 1.0);
   }
   
   // Convert face embedding to a string for storage
@@ -618,7 +742,7 @@ class FaceRecognitionService {
         interpolation: img.Interpolation.cubic,
       );
       
-      // Convert to float tensor [1, 112, 112, 3] with values normalized to [-1, 1]
+      // Convert to float tensor [1, 160, 160, 3] with values normalized to [-1, 1]
       final tensor = List.generate(
         1,
         (_) => List.generate(

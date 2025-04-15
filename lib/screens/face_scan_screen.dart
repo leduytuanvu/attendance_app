@@ -30,7 +30,10 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   bool _faceDetected = false;
   int _detectionCount = 0;
   static const int _requiredDetections = 3; // Detections needed per angle
-  bool _showConfirmation = false;
+  final bool _showConfirmation = false;
+  
+  // Flag to track if we're in the process of navigating away
+  bool _isNavigating = false;
 
   // Store the last detected face for face data generation
   Face? _lastDetectedFace;
@@ -55,6 +58,15 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   // List to store processed face data with embeddings
   final List<Map<String, dynamic>> _processedFaceData = [];
 
+  // Track progress for UI feedback
+  int _totalAnglesDetected = 0;
+  int _totalRequiredAngles =
+      5; // All 5 angles for registration, 3 for identification
+      
+  // Face recognition service
+  final FaceRecognitionService _faceRecognitionService =
+      FaceRecognitionService();
+
   @override
   void initState() {
     super.initState();
@@ -65,13 +77,13 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   void dispose() {
     // Cancel any timers first
     _detectionTimer?.cancel();
-    
+
     // Close the face detector
     if (_faceDetector != null) {
       _faceDetector!.close();
       _faceDetector = null;
     }
-    
+
     // Dispose of the camera controller safely
     if (_controller != null) {
       if (_controller!.value.isStreamingImages) {
@@ -86,7 +98,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       }
       _controller = null;
     }
-    
+
     super.dispose();
   }
 
@@ -151,6 +163,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     }
   }
 
+  // Optimized detection loop with better performance and reduced freezing
   void _startDetectionLoop() {
     if (!_isCameraInitialized ||
         _controller == null ||
@@ -163,23 +176,37 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     _detectionTimer?.cancel();
 
     try {
-      print("Starting image stream for face detection");
+      // Check if the camera is already streaming images
+      if (_controller!.value.isStreamingImages) {
+        print("Camera is already streaming images, not starting a new stream");
+        return;
+      }
+
+      print("Starting optimized image stream for face detection");
+
+      // Use a more efficient approach with throttling to prevent UI freezing
+      int frameSkipCounter = 0;
+      const int frameSkipThreshold =
+          2; // Process every 3rd frame to reduce CPU load
+
       // Start the image stream only once
       _controller!.startImageStream((CameraImage image) async {
-        if (_isDetecting || !mounted) return; // Prevent concurrent processing
+        // Skip frames to reduce processing load
+        frameSkipCounter = (frameSkipCounter + 1) % (frameSkipThreshold + 1);
+        if (frameSkipCounter != 0) return;
 
-        setState(() {
-          _isDetecting = true;
-        });
+        // Prevent concurrent processing
+        if (_isDetecting || !mounted || _isNavigating) return;
+
+        // Set detecting flag without setState to reduce UI updates
+        _isDetecting = true;
 
         try {
           final InputImage? inputImage = _inputImageFromCameraImage(image);
           if (inputImage == null) {
             print("Failed to create InputImage from camera image");
             if (mounted) {
-              setState(() {
-                _isDetecting = false;
-              });
+              _isDetecting = false;
             }
             return;
           }
@@ -188,130 +215,88 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
           final List<Face> faces =
               await _faceDetector!.processImage(inputImage);
 
-          if (faces.isNotEmpty && mounted) {
+          // Only update UI if mounted
+          if (!mounted) {
+            _isDetecting = false;
+            return;
+          }
+
+          // Check if faces were found
+          if (faces.isNotEmpty) {
             final face = faces.first;
 
             // Store the detected face for later use
             _lastDetectedFace = face;
 
-            // For check-in mode (identifying), we only need the front face
-            // For registration mode, we need multiple angles
-            if (widget.isIdentifying) {
-              // For check-in, we need at least front and one more angle for better accuracy
-              if (_isCorrectFaceAngle(face, _currentRequestedAngle)) {
-                // Increment detection count for the current angle
-                _detectionCount++;
+            // Check if the face is at the correct angle
+            bool isCorrectAngle =
+                _isCorrectFaceAngle(face, _currentRequestedAngle);
 
-                // Update UI to show face is being detected
-                setState(() {
-                  _faceDetected = true;
-                  _isDetecting = false;
-                });
-
-                // If we've detected the face multiple times in the current angle
-                if (_detectionCount >= 2) {
-                  // Reduced from 3 to 2 for faster but still accurate check-in
-                  // Mark this angle as detected
-                  setState(() {
-                    _angleDetected[_currentRequestedAngle] = true;
-
-                    // Store face data for this angle
-                    _storeFaceDataForAngle(face, _currentRequestedAngle);
-
-                    // For check-in, we only need the front angle
-                    if (_currentRequestedAngle == FaceAngle.front) {
-                      if (widget.isIdentifying) {
-                        // For identification mode (check-in), proceed immediately with just the front angle
-                        // Add a small delay to ensure proper processing
-                        Future.delayed(const Duration(milliseconds: 500), () {
-                          if (mounted) {
-                            _confirmFaceDetection(skipConfirmation: true);
-
-                            // Stop image stream
-                            if (_controller?.value.isStreamingImages ?? false) {
-                              _controller?.stopImageStream();
-                            }
-                          }
-                        });
-                      } else {
-                        // For registration, we still need multiple angles, show confirmation screen
-                        setState(() {
-                          _showConfirmation = true;
-                        });
-                        
-                        // Add a small delay to ensure proper processing
-                        Future.delayed(const Duration(milliseconds: 500), () {
-                          if (mounted) {
-                            // Stop image stream
-                            if (_controller?.value.isStreamingImages ?? false) {
-                              _controller?.stopImageStream();
-                            }
-                          }
-                        });
-                      }
-                    }
-                  });
-                } else {
-                  // Continue detecting if we haven't reached the threshold
-                  setState(() {
-                    _isDetecting = false;
-                  });
-                }
-              } else {
-                setState(() {
-                  _faceDetected = false;
-                  _isDetecting = false;
-                });
-              }
-            } else {
-              // For registration, we need multiple angles
-              // Check if the current face angle matches the requested angle
-              bool isCorrectAngle =
-                  _isCorrectFaceAngle(face, _currentRequestedAngle);
+            // Batch UI updates to reduce setState calls
+            setState(() {
+              _faceDetected = isCorrectAngle;
 
               if (isCorrectAngle) {
                 // Increment detection count for the current angle
                 _detectionCount++;
 
-                // Update UI to show face is being detected
-                setState(() {
-                  _faceDetected = true;
-                  _isDetecting = false;
-                });
+                // Check if we've reached the required detections
+                bool thresholdReached = widget.isIdentifying
+                    ? _detectionCount >= 2
+                    : // Faster for check-in
+                    _detectionCount >=
+                        _requiredDetections; // More thorough for registration
 
-                // If we've detected the face multiple times in the current angle
-                if (_detectionCount >= _requiredDetections) {
+                if (thresholdReached) {
                   // Mark this angle as detected
-                  setState(() {
-                    _angleDetected[_currentRequestedAngle] = true;
+                  _angleDetected[_currentRequestedAngle] = true;
 
+                  // For check-in mode with front angle, proceed immediately
+                  if (widget.isIdentifying &&
+                      _currentRequestedAngle == FaceAngle.front) {
+                    // Schedule face data storage and confirmation
+                    Future.delayed(const Duration(milliseconds: 300), () {
+                      if (mounted && !_isNavigating) {
+                        _storeFaceDataForAngle(face, _currentRequestedAngle)
+                            .then((_) {
+                          if (mounted && !_isNavigating) {
+                            _confirmFaceDetection(skipConfirmation: true);
+
+                            // Stop image stream
+                            if (_controller != null &&
+                                _controller!.value.isStreamingImages) {
+                              _controller!.stopImageStream();
+                            }
+                          }
+                        });
+                      }
+                    });
+                  }
+                  // For registration or other angles in check-in
+                  else {
                     // Store face data for this angle
                     _storeFaceDataForAngle(face, _currentRequestedAngle);
 
-                    // Reset detection count for next angle
-                    _detectionCount = 0;
-
-                    // Move to next angle or complete if all angles are detected
-                    _moveToNextAngle();
-                  });
-                } else {
-                  // Continue detecting if we haven't reached the threshold
-                  setState(() {
-                    _isDetecting = false;
-                  });
+                    // For registration mode, automatically move to next angle without confirmation
+                    if (!widget.isIdentifying) {
+                      _detectionCount = 0; // Reset for next angle
+                      setState(() {
+                        _totalAnglesDetected++;
+                      });
+                      _moveToNextAngle();
+                    }
+                  }
                 }
-              } else {
-                // Face detected but not at the correct angle
-                setState(() {
-                  _faceDetected = false;
-                  _isDetecting = false;
-                });
               }
-            }
+
+              // Always reset detection flag at the end
+              _isDetecting = false;
+            });
           } else {
             // No face detected in this frame
             if (mounted) {
               setState(() {
+                _faceDetected = false;
                 _isDetecting = false;
               });
             }
@@ -319,9 +304,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         } catch (e) {
           print("Error during face detection: $e");
           if (mounted) {
-            setState(() {
-              _isDetecting = false;
-            });
+            _isDetecting = false;
           }
         }
       });
@@ -338,8 +321,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   Future<void> _stopDetectionAndCamera() async {
     _detectionTimer?.cancel();
-    if (_controller?.value.isStreamingImages ?? false) {
-      await _controller?.stopImageStream();
+    if (_controller != null && _controller!.value.isStreamingImages) {
+      await _controller!.stopImageStream();
     }
     _isDetecting = false; // Ensure detection stops
   }
@@ -425,9 +408,377 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     });
   }
 
-  // Face recognition service
-  final FaceRecognitionService _faceRecognitionService =
-      FaceRecognitionService();
+  // Check if the face is at the correct angle based on the requested angle
+  bool _isCorrectFaceAngle(Face face, FaceAngle angle) {
+    final top = face.boundingBox.top;
+    final yAngle = face.headEulerAngleY ?? 0;
+    final zAngle = face.headEulerAngleZ ?? 0;
+    final xAngle = face.headEulerAngleX ?? 0; // Try to use X angle if available
+    final height = face.boundingBox.height;
+    final width = face.boundingBox.width;
+    final aspectRatio = width / height;
+
+    // Invert Y angle for front camera (fix left-right reversal)
+    // Front camera is mirrored, so we need to invert the Y angle
+    final adjustedYAngle = -yAngle; // Invert Y angle for front camera
+
+    // Calculate additional metrics for up/down detection
+    // Use multiple indicators for more reliable up/down detection
+
+    // 1. Position of face in frame
+    final normalizedTop = top / height; // Normalized position from top
+
+    // 2. Face aspect ratio changes when looking up/down
+    final faceAspectRatioChange =
+        aspectRatio - 1.3; // Typical face aspect ratio is around 1.3
+
+    // Combine multiple indicators for more reliable detection
+    final isLookingUp = (zAngle < -5) || // Traditional angle detection
+        (normalizedTop > 0.6) || // Position in frame
+        (faceAspectRatioChange < -0.15); // Face gets taller when looking up
+
+    // Make looking down detection more sensitive
+    final isLookingDown = (zAngle > 3) || // More sensitive angle detection (was 5)
+        (normalizedTop < 0.35) || // More sensitive position threshold (was 0.3)
+        (faceAspectRatioChange > 0.1) || // More sensitive aspect ratio change (was 0.15)
+        (xAngle > 8); // Also use X angle if available
+
+    // Print detailed debug info for angle detection
+    print(
+        "[Face Angle Debug] Original Y: $yAngle, Adjusted Y: $adjustedYAngle, Z: $zAngle, X: $xAngle, "
+        "Top: $top, NormalizedTop: $normalizedTop, Height: $height, Width: $width, "
+        "AspectRatio: $aspectRatio, AspectRatioChange: $faceAspectRatioChange, "
+        "isLookingUp: $isLookingUp, isLookingDown: $isLookingDown, "
+        "CurrentRequestedAngle: $angle");
+
+    // For identification mode, be a bit more lenient but still require correct positioning
+    if (widget.isIdentifying) {
+      // For identification, we mainly care about having a good frontal face
+      if (angle == FaceAngle.front) {
+        // Front face detection for identification
+        return adjustedYAngle.abs() < 15 && zAngle.abs() < 15;
+      }
+
+      // For other angles in identification mode
+      switch (angle) {
+        case FaceAngle.front:
+          // Already handled above
+          return true;
+        case FaceAngle.left:
+          return adjustedYAngle > 20 &&
+              adjustedYAngle < 60; // Must be clearly turned left
+        case FaceAngle.right:
+          return adjustedYAngle < -20 &&
+              adjustedYAngle > -60; // Must be clearly turned right
+        case FaceAngle.up:
+          // More lenient for identification mode
+          return isLookingUp || zAngle < -3 || normalizedTop > 0.55;
+        case FaceAngle.down:
+          // More lenient for identification mode
+          return isLookingDown || zAngle > 3 || normalizedTop < 0.35;
+      }
+    }
+
+    // For registration mode, be more strict to ensure quality face data
+    switch (angle) {
+      case FaceAngle.front:
+        // Front face detection - must be looking directly at camera
+        return adjustedYAngle.abs() < 12 && zAngle.abs() < 12;
+
+      case FaceAngle.left:
+        // Left angle detection - must be clearly turned left
+        return adjustedYAngle > 25 && adjustedYAngle < 60;
+
+      case FaceAngle.right:
+        // Right angle detection - must be clearly turned right
+        return adjustedYAngle < -25 && adjustedYAngle > -60;
+
+      case FaceAngle.up:
+        // Up angle detection - use multiple indicators with stricter thresholds for registration
+        return isLookingUp ||
+            (zAngle < -4 && normalizedTop > 0.5) || // Combined conditions
+            (faceAspectRatioChange < -0.1 &&
+                normalizedTop > 0.45); // Another combination
+
+      case FaceAngle.down:
+        // Down angle detection - use multiple indicators with more sensitive thresholds
+        return isLookingDown ||
+            (zAngle > 2 && normalizedTop < 0.45) || // More sensitive combined conditions
+            (faceAspectRatioChange > 0.05 && normalizedTop < 0.5) || // More sensitive combination
+            (xAngle > 5); // Also use X angle if available
+    }
+    
+    // Default fallback (should never reach here)
+    return false;
+  }
+
+  // Method to confirm face detection and return to previous screen
+  Future<void> _confirmFaceDetection({bool skipConfirmation = false}) async {
+    // Set the navigation flag to prevent further camera operations
+    setState(() {
+      _isNavigating = true;
+    });
+    
+    try {
+      // Safely stop detection and camera
+      try {
+        await _stopDetectionAndCamera();
+      } catch (e) {
+        print("Error stopping detection and camera: $e");
+        // Continue even if there's an error stopping the camera
+      }
+
+      // Check if widget is still mounted before proceeding
+      if (!mounted) return;
+
+      // Prepare result data
+      Map<String, dynamic> resultData = {
+        'faceDetected': true,
+        'success': true,
+        'multiAngle': false,
+        'faceData': _lastDetectedFace != null
+            ? _generateFallbackFaceData(_lastDetectedFace!)
+            : null
+      };
+
+      // Check if widget is still mounted before popping
+      if (mounted) {
+        try {
+          // Ensure we're properly releasing camera resources before navigation
+          if (_controller != null) {
+            try {
+              // First stop any streaming
+              if (_controller!.value.isStreamingImages) {
+                await _controller!.stopImageStream();
+              }
+              // Then dispose the controller
+              await _controller!.dispose();
+            } catch (e) {
+              print("Error disposing camera controller: $e");
+            } finally {
+              // Always set controller to null to prevent further access attempts
+              _controller = null;
+            }
+          }
+
+          // Use a more robust navigation approach
+          if (mounted) {
+            // Use a direct approach with a try-catch
+            try {
+              print("Navigating back with result data");
+              Navigator.of(context).pop(resultData);
+            } catch (e) {
+              print("Navigation failed: $e");
+              
+              // Try again with a post-frame callback
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  try {
+                    Navigator.of(context).pop(resultData);
+                  } catch (e2) {
+                    print("Post-frame navigation failed: $e2");
+                  }
+                }
+              });
+            }
+          }
+        } catch (navError) {
+          print("Navigation error in _confirmFaceDetection: $navError");
+        }
+      }
+    } catch (e) {
+      print("Error in _confirmFaceDetection: $e");
+      // If there's an error, still try to return some result if mounted
+      if (mounted) {
+        try {
+          // Ensure we're properly releasing camera resources before navigation
+          if (_controller != null) {
+            await _controller!.dispose();
+            _controller = null;
+          }
+
+          // Use a safer navigation approach
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              Navigator.of(context).pop({
+                'faceDetected': true,
+                'success': false,
+                'error': e.toString(),
+                'faceData': _lastDetectedFace != null
+                    ? _generateFallbackFaceData(_lastDetectedFace!)
+                    : null
+              });
+            }
+          });
+        } catch (navError) {
+          print("Error during error handling navigation: $navError");
+        }
+      }
+    }
+  }
+
+  // Get a single camera image for processing - optimized to reduce freezing
+  Future<CameraImage?> _getCameraImage() async {
+    if (_controller == null || !_controller!.value.isInitialized || _isNavigating) {
+      print("Camera not initialized for image capture");
+      return null;
+    }
+
+    // Use a completer to get a single frame from the camera
+    final completer = Completer<CameraImage?>();
+
+    // Set a shorter timeout to avoid hanging if no image is received
+    final timeout = Timer(const Duration(milliseconds: 1500), () {
+      if (!completer.isCompleted) {
+        completer.complete(null);
+        print("Camera image capture timed out");
+      }
+    });
+
+    try {
+      CameraImage? latestImage;
+      bool wasStreaming = false;
+
+      // Check if we're already streaming images
+      if (_controller!.value.isStreamingImages) {
+        wasStreaming = true;
+        print("Camera is already streaming, using existing stream");
+
+        // Temporarily pause detection to avoid conflicts
+        _isDetecting = true;
+
+        // Try to get an image from the existing stream with a timeout
+        bool imageReceived = false;
+
+        // Create a temporary listener for the existing stream
+        // We'll use a variable outside the callback to track if we got an image
+        try {
+          // Wait a bit to see if we get an image from the existing stream
+          await Future.delayed(const Duration(milliseconds: 200));
+
+          // If we still don't have an image, try a different approach
+          if (!imageReceived && _lastDetectedFace != null) {
+            // We have a last detected face, so we can use that
+            print("Using last detected face as fallback");
+            if (!completer.isCompleted) {
+              timeout.cancel();
+              completer.complete(
+                  null); // Return null but we'll use last detected face
+            }
+          } else {
+            // Try a more careful approach to restart the stream
+            try {
+              // Safely stop the stream first
+              print("Safely stopping existing stream");
+              await _controller!.stopImageStream();
+
+              // Small delay to ensure the stream is fully stopped
+              await Future.delayed(const Duration(milliseconds: 100));
+
+              // Start a new stream to get one frame
+              print("Starting new temporary stream");
+              if (!_controller!.value.isStreamingImages) {
+                await _controller!.startImageStream((image) {
+                  // Only take the first image
+                  if (latestImage == null) {
+                    latestImage = image;
+                    imageReceived = true;
+
+                    // Complete with the image
+                    if (!completer.isCompleted) {
+                      timeout.cancel();
+                      completer.complete(image);
+                    }
+                  }
+                });
+
+                // Wait a short time to ensure we get at least one frame
+                await Future.delayed(const Duration(milliseconds: 300));
+
+                // Stop the temporary stream
+                if (_controller!.value.isStreamingImages) {
+                  await _controller!.stopImageStream();
+                }
+              }
+            } catch (e) {
+              print("Error in stream restart approach: $e");
+              if (!completer.isCompleted) {
+                completer.complete(null);
+              }
+            }
+          }
+        } catch (e) {
+          print("Error in existing stream handling: $e");
+          if (!completer.isCompleted) {
+            completer.complete(null);
+          }
+        }
+      } else {
+        // If not streaming, start a new stream just to get one frame
+        print("Starting new image stream for single frame");
+        try {
+          await _controller!.startImageStream((image) {
+            // Only complete once
+            if (latestImage == null) {
+              latestImage = image;
+
+              // Complete with the image
+              if (!completer.isCompleted) {
+                timeout.cancel();
+                completer.complete(image);
+              }
+            }
+          });
+
+          // Wait a short time to ensure we get at least one frame
+          await Future.delayed(const Duration(milliseconds: 300));
+
+          // Stop the temporary stream
+          if (_controller!.value.isStreamingImages) {
+            await _controller!.stopImageStream();
+          }
+        } catch (e) {
+          print("Error starting temporary stream: $e");
+          if (!completer.isCompleted) {
+            completer.complete(null);
+          }
+        }
+      }
+
+      // If we were streaming before, restart the detection loop
+      if (wasStreaming) {
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted && _controller != null && !_isNavigating) {
+            _isDetecting = false;
+            // Only restart if controller is still valid and not already streaming
+            if (_controller != null &&
+                _controller!.value.isInitialized &&
+                !_controller!.value.isStreamingImages) {
+              _startDetectionLoop();
+            }
+          }
+        });
+      }
+
+      // If we got an image, return it
+      if (latestImage != null) {
+        return latestImage;
+      }
+    } catch (e) {
+      print("Error getting camera image: $e");
+      if (!completer.isCompleted) {
+        completer.complete(null);
+      }
+
+      // Make sure detection can continue
+      if (mounted) {
+        _isDetecting = false;
+      }
+    }
+
+    // Return the captured image or null if we couldn't get one
+    return completer.future;
+  }
 
   // Generate face data using TensorFlow Lite model
   Future<Map<String, dynamic>> _generateFaceData(Face face) async {
@@ -509,139 +860,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         "${DateTime.now().millisecondsSinceEpoch}";
   }
 
-  // Get a single camera image for processing
-  Future<CameraImage?> _getCameraImage() async {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return null;
-    }
-
-    // Use a completer to get a single frame from the camera
-    final completer = Completer<CameraImage?>();
-    
-    // Set a timeout to avoid hanging if no image is received
-    final timeout = Timer(const Duration(seconds: 2), () {
-      if (!completer.isCompleted) {
-        completer.complete(null);
-        print("Camera image capture timed out");
-      }
-    });
-
-    try {
-      // Check if image stream is already running
-      if (_controller!.value.isStreamingImages) {
-        // If already streaming, just use the next frame from the existing stream
-        // We don't need to start a new stream
-        return await _getFrameFromExistingStream(completer, timeout);
-      } else {
-        // If not streaming, start a new stream
-        await _controller!.startImageStream((image) {
-          // Only complete once
-          if (!completer.isCompleted) {
-            // Stop the stream after getting the first image
-            _controller!.stopImageStream();
-            timeout.cancel();
-            completer.complete(image);
-          }
-        });
-      }
-    } catch (e) {
-      print("Error starting image stream: $e");
-      if (!completer.isCompleted) {
-        completer.complete(null);
-      }
-    }
-
-    // Return the captured image
-    return completer.future;
-  }
-  
-  // Helper method to get a frame from an existing stream
-  Future<CameraImage?> _getFrameFromExistingStream(
-      Completer<CameraImage?> completer, Timer timeout) async {
-    // We're already streaming, so we just need to wait for the next frame
-    // This is a workaround since we can't directly subscribe to the existing stream
-    
-    // Create a flag to track if we've received a frame
-    bool frameReceived = false;
-    
-    try {
-      // Check if controller is still valid
-      if (_controller == null || !_controller!.value.isInitialized) {
-        print("Camera controller is null or not initialized");
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-        return completer.future;
-      }
-      
-      // Since we can't directly access the stream callback, we need to stop and restart the stream
-      // First, stop the current stream
-      if (_controller!.value.isStreamingImages) {
-        await _controller!.stopImageStream();
-      } else {
-        print("Camera is not streaming images");
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-        return completer.future;
-      }
-      
-      // Wait a short moment to ensure the stream is fully stopped
-      await Future.delayed(const Duration(milliseconds: 100));
-      
-      // Check again if controller is still valid
-      if (_controller == null || !_controller!.value.isInitialized) {
-        print("Camera controller became invalid after stopping stream");
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-        return completer.future;
-      }
-      
-      // Start a new stream to get a single frame
-      await _controller!.startImageStream((image) {
-        // Only complete once
-        if (!completer.isCompleted && !frameReceived) {
-          frameReceived = true;
-          
-          // Cancel the timeout
-          timeout.cancel();
-          
-          // Complete with the image
-          completer.complete(image);
-          
-          // Stop the stream after getting the frame
-          if (_controller != null && _controller!.value.isInitialized && _controller!.value.isStreamingImages) {
-            _controller!.stopImageStream();
-          }
-          
-          // Restart the original detection stream after a short delay
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (_controller != null && mounted && _controller!.value.isInitialized) {
-              _startDetectionLoop();
-            }
-          });
-        }
-      });
-      
-    } catch (e) {
-      print("Error getting frame from existing stream: $e");
-      if (!completer.isCompleted) {
-        completer.complete(null);
-      }
-      
-      // Make sure we restart the detection stream if there was an error
-      if (_controller != null && mounted && _controller!.value.isInitialized) {
-        Future.delayed(const Duration(milliseconds: 100), () {
-          _startDetectionLoop();
-        });
-      }
-    }
-    
-    // Return the completer's future
-    return completer.future;
-  }
-
   // Store face data for the current angle
   Future<void> _storeFaceDataForAngle(Face face, FaceAngle angle) async {
     Map<String, dynamic> faceData = await _generateFaceData(face);
@@ -659,280 +877,17 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       _faceDataFromAngles.add(faceData['fallbackData']);
     }
 
-    print(
-        "Stored face data for angle: $angle - Success: ${faceData['success']}");
+    print("Stored face data for angle: $angle - Success: ${faceData['success']}");
   }
-
-  // Method to confirm face detection and return to previous screen
-  Future<void> _confirmFaceDetection({bool skipConfirmation = false}) async {
-    try {
-      await _stopDetectionAndCamera();
-
-      // Check if widget is still mounted before proceeding
-      if (!mounted) return;
-
-      // Process collected face data
-      List<Map<String, dynamic>> processedFaceData = [];
-      List<String> fallbackFaceData = [];
-      List<List<double>> faceEmbeddings = [];
-
-      // Check if we have collected face data from multiple angles
-      if (_processedFaceData.isEmpty && _lastDetectedFace != null) {
-        // Fallback to last detected face if no multi-angle data
-        final faceDataResult = await _generateFaceData(_lastDetectedFace!);
-
-        if (faceDataResult['success']) {
-          processedFaceData.add(faceDataResult);
-          faceEmbeddings.add(faceDataResult['embedding']);
-        } else {
-          fallbackFaceData.add(faceDataResult['fallbackData']);
-        }
-      } else {
-        // We already have face data from multiple angles in _processedFaceData
-        for (var data in _processedFaceData) {
-          if (data['success']) {
-            processedFaceData.add(data);
-            faceEmbeddings.add(data['embedding']);
-          } else {
-            fallbackFaceData.add(data['fallbackData']);
-          }
-        }
-      }
-
-      // Check if widget is still mounted before proceeding
-      if (!mounted) return;
-
-      // Prepare result data
-      Map<String, dynamic> resultData = {
-        'faceDetected': true,
-        'success': true,
-        'multiAngle': _angleDetected.values.where((detected) => detected).length > 1,
-      };
-
-      // Add CCCD for identification mode (even though we're skipping the input screen)
-      if (widget.isIdentifying) {
-        resultData['cccd'] = _cccdController.text;
-      }
-
-      // Add face data
-      if (processedFaceData.isNotEmpty) {
-        // Use the first face data as primary
-        resultData['faceData'] = processedFaceData.first['embeddingString'] ?? processedFaceData.first['fallbackData'];
-        resultData['allFaceData'] = processedFaceData;
-
-        // Add embeddings for better matching
-        resultData['faceEmbeddings'] = faceEmbeddings;
-
-        // Add a combined embedding (average of all embeddings) for more robust matching
-        if (faceEmbeddings.length > 1) {
-          resultData['combinedEmbedding'] = _combineEmbeddings(faceEmbeddings);
-        }
-      } else if (fallbackFaceData.isNotEmpty) {
-        // Use fallback data if no processed data is available
-        resultData['faceData'] = fallbackFaceData.first;
-        resultData['allFaceData'] = fallbackFaceData;
-        resultData['usingFallback'] = true;
-      }
-
-      // Check if widget is still mounted before popping
-      if (mounted) {
-        try {
-          // Ensure we're properly releasing camera resources before navigation
-          if (_controller != null) {
-            await _controller!.dispose();
-            _controller = null;
-          }
-          
-          // Return result to previous screen with a more robust approach
-          if (mounted) {
-            try {
-              // Use a safer navigation approach to prevent returning to home screen
-              Navigator.of(context).pop(resultData);
-            } catch (e) {
-              print("First navigation attempt failed: $e");
-              
-              // Try again with a different approach
-              Future.delayed(const Duration(milliseconds: 100), () {
-                if (mounted) {
-                  try {
-                    Navigator.pop(context, resultData);
-                  } catch (e2) {
-                    print("Second navigation attempt failed: $e2");
-                    
-                    // Last resort - use a post-frame callback
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted) {
-                        try {
-                          Navigator.of(context).pop(resultData);
-                        } catch (e3) {
-                          print("Third navigation attempt failed: $e3");
-                        }
-                      }
-                    });
-                  }
-                }
-              });
-            }
-          }
-        } catch (navError) {
-          print("Navigation error in _confirmFaceDetection: $navError");
-          // If there's a navigation error, try again after a short delay with a different approach
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              try {
-                Navigator.of(context).pop(resultData);
-              } catch (e) {
-                print("Second navigation attempt failed: $e");
-                // Last resort - try one more time with a different approach
-                if (mounted) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    Navigator.pop(context, resultData);
-                  });
-                }
-              }
-            }
-          });
-        }
-      }
-    } catch (e) {
-      print("Error in _confirmFaceDetection: $e");
-      // If there's an error, still try to return some result if mounted
-      if (mounted) {
-        try {
-          // Ensure we're properly releasing camera resources before navigation
-          if (_controller != null) {
-            await _controller!.dispose();
-            _controller = null;
-          }
-          
-          // Use a safer navigation approach
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              Navigator.of(context).pop({
-                'faceDetected': true,
-                'success': false,
-                'error': e.toString(),
-                'faceData': _lastDetectedFace != null ? _generateFallbackFaceData(_lastDetectedFace!) : null
-              });
-            }
-          });
-        } catch (navError) {
-          print("Error during error handling navigation: $navError");
-        }
-      }
-    }
-  }
-
-  // Combine multiple face embeddings into a single, more robust embedding
-  List<double> _combineEmbeddings(List<List<double>> embeddings) {
-    if (embeddings.isEmpty) {
-      return [];
-    }
-
-    final int embeddingSize = embeddings.first.length;
-    final List<double> combined = List<double>.filled(embeddingSize, 0.0);
-
-    // Sum all embeddings
-    for (final embedding in embeddings) {
-      for (int i = 0; i < embeddingSize; i++) {
-        combined[i] += embedding[i];
-      }
-    }
-
-    // Divide by count to get average
-    for (int i = 0; i < embeddingSize; i++) {
-      combined[i] = combined[i] / embeddings.length;
-    }
-
-    // Normalize the combined embedding (using our own normalization since we can't access private method)
-    return _normalizeEmbedding(combined);
-  }
-
-  // Normalize embedding vector to unit length for better comparison
-  List<double> _normalizeEmbedding(List<double> embedding) {
-    double sum = 0;
-    for (final value in embedding) {
-      sum += value * value;
-    }
-
-    final norm = math.sqrt(sum);
-    if (norm > 0) {
-      for (int i = 0; i < embedding.length; i++) {
-        embedding[i] = embedding[i] / norm;
-      }
-    }
-
-    return embedding;
-  }
-
-  // Check if the face is at the correct angle based on the requested angle
-  // Highly optimized for Asian faces with much more lenient angle detection
-  bool _isCorrectFaceAngle(Face face, FaceAngle angle) {
-    final top = face.boundingBox.top;
-    final yAngle = face.headEulerAngleY ?? 0;
-    final zAngle = face.headEulerAngleZ ?? 0;
-    final height = face.boundingBox.height;
-    final width = face.boundingBox.width;
-    final aspectRatio = width / height;
-
-    // Print debug info for angle detection
-    print(
-        "[Face Angle Debug] Y: $yAngle, Z: $zAngle, Top: $top, Height: $height, Width: $width, Ratio: $aspectRatio");
-
-    // For identification mode, be extremely lenient to improve success rate
-    if (widget.isIdentifying) {
-      // For identification, we mainly care about having a good frontal face
-      if (angle == FaceAngle.front) {
-        // Much more lenient front face detection for identification
-        return yAngle.abs() < 30 && zAngle.abs() < 20;
-      }
-      
-      // For other angles in identification mode, be very lenient
-      switch (angle) {
-        case FaceAngle.front:
-          // Already handled above
-          return true;
-        case FaceAngle.left:
-          return yAngle > 5;
-        case FaceAngle.right:
-          return yAngle < -5;
-        case FaceAngle.up:
-          return zAngle < -5;
-        case FaceAngle.down:
-          return zAngle > 5;
-      }
-    }
-    
-    // For registration mode, be more specific but still lenient for Asian faces
-    switch (angle) {
-      case FaceAngle.front:
-        // More lenient front face detection for Asian faces
-        return yAngle.abs() < 25 && zAngle.abs() < 18;
-
-      case FaceAngle.left:
-        // More lenient left angle detection
-        return yAngle > 10;
-
-      case FaceAngle.right:
-        // More lenient right angle detection
-        return yAngle < -10;
-
-      case FaceAngle.up:
-        // Adjusted for Asian facial features
-        return (top > 290 && yAngle.abs() < 25) || zAngle < -8;
-
-      case FaceAngle.down:
-        // More lenient down angle detection for Asian faces
-        // Nếu mặt nhỏ lại đáng kể (do cúi đầu) hoặc ở vị trí cao trên khung hoặc góc Z dương
-        return height < 460 || top < 350 || zAngle > 8;
-    }
-  }
-
+  
   // Move to the next angle or complete if all angles are detected
   void _moveToNextAngle() {
     // For registration, require all 5 angles to be detected
     // For identification, 3 angles would be sufficient
     bool allRequiredAnglesDetected = true;
+
+    // Set the required number of angles based on mode
+    _totalRequiredAngles = widget.isIdentifying ? 3 : 5;
 
     // Check if all required angles are detected
     if (!widget.isIdentifying) {
@@ -945,26 +900,34 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       }
     } else {
       // For identification, at least 3 angles are sufficient
-      int detectedAnglesCount =
-          _angleDetected.values.where((detected) => detected).length;
+      int detectedAnglesCount = 0;
+      for (var detected in _angleDetected.values) {
+        if (detected) detectedAnglesCount++;
+      }
       allRequiredAnglesDetected = detectedAnglesCount >= 3;
     }
 
+    // If all required angles are detected, proceed to confirmation
     if (allRequiredAnglesDetected) {
-      // All required angles detected, show confirmation
-      if (_controller?.value.isStreamingImages ?? false) {
-        _controller?.stopImageStream();
+      // Stop image stream
+      if (_controller != null && _controller!.value.isStreamingImages) {
+        _controller!.stopImageStream();
       }
 
-      setState(() {
-        _showConfirmation = true;
+      // Proceed to confirmation immediately
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _confirmFaceDetection();
+        }
       });
       return;
     }
 
-    // Define a logical sequence for face angle detection
-    // Start with front, then left/right, then up/down
-    List<FaceAngle> angleSequence = [
+    // Otherwise, move to the next undetected angle
+    FaceAngle? nextAngle;
+
+    // Define the preferred order of angles for a more natural user experience
+    final List<FaceAngle> preferredOrder = [
       FaceAngle.front,
       FaceAngle.left,
       FaceAngle.right,
@@ -972,394 +935,440 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       FaceAngle.down,
     ];
 
-    // Find the next undetected angle in the sequence
-    FaceAngle? nextAngle;
-    for (var angle in angleSequence) {
+    // Find the next angle in the preferred order that hasn't been detected yet
+    for (var angle in preferredOrder) {
       if (!_angleDetected[angle]!) {
         nextAngle = angle;
         break;
       }
     }
 
-    // Default to front if all angles have been attempted
-    nextAngle ??= FaceAngle.front;
+    // If we found a next angle, update the UI
+    if (nextAngle != null) {
+      setState(() {
+        _currentRequestedAngle = nextAngle!;
+        _detectionCount = 0;
+        _faceDetected = false;
+      });
 
-    setState(() {
-      _currentRequestedAngle = nextAngle!;
-      _faceDetected = false;
-    });
-  }
+      // Provide feedback to the user about the next angle
+      print("Moving to next angle: $_currentRequestedAngle");
 
-  // Get icon for the current angle
-  Widget _getAngleIcon(FaceAngle angle) {
-    switch (angle) {
-      case FaceAngle.front:
-        return const Icon(Icons.face, color: Colors.white);
-      case FaceAngle.left:
-        return const Icon(Icons.arrow_back, color: Colors.white);
-      case FaceAngle.right:
-        return const Icon(Icons.arrow_forward, color: Colors.white);
-      case FaceAngle.up:
-        return const Icon(Icons.arrow_upward, color: Colors.white);
-      case FaceAngle.down:
-        return const Icon(Icons.arrow_downward, color: Colors.white);
-    }
-  }
-
-  // Get instruction text for the current angle
-  // Optimized with more detailed instructions for Asian faces
-  String _getAngleInstruction(FaceAngle angle) {
-    switch (angle) {
-      case FaceAngle.front:
-        return 'Nhìn thẳng vào camera, giữ nét mặt tự nhiên';
-      case FaceAngle.left:
-        return 'Quay mặt sang trái khoảng 30-45 độ';
-      case FaceAngle.right:
-        return 'Quay mặt sang phải khoảng 30-45 độ';
-      case FaceAngle.up:
-        return 'Ngẩng đầu lên trên một chút';
-      case FaceAngle.down:
-        return 'Cúi đầu xuống dưới một chút';
-    }
-  }
-
-  // Method to retry face detection
-  void _retryFaceDetection() {
-    setState(() {
-      _showConfirmation = false;
-      _faceDetected = false;
-      _detectionCount = 0;
-
-      // Reset all angles
-      for (var angle in FaceAngle.values) {
-        _angleDetected[angle] = false;
+      // Ensure detection loop is running for the new angle
+      // Only restart if not already streaming
+      if (_controller != null && !_controller!.value.isStreamingImages) {
+        _startDetectionLoop();
       }
-
-      // Start with front angle for better user experience
-      _currentRequestedAngle = FaceAngle.front;
-      _faceDataFromAngles.clear();
-      _processedFaceData.clear();
-    });
-
-    // Restart the detection process
-    _startDetectionLoop();
+    }
   }
-
+  
   @override
   Widget build(BuildContext context) {
-    // If we're showing the confirmation UI
-    if (_showConfirmation) {
-      return Scaffold(
-        appBar: AppBar(
-          title: Text(widget.isIdentifying
-              ? 'Xác nhận điểm danh'
-              : 'Xác nhận khuôn mặt'),
-          automaticallyImplyLeading: false,
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(
-                  Icons.check_circle,
-                  color: Colors.green,
-                  size: 80,
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  widget.isIdentifying
-                      ? 'Đã nhận diện khuôn mặt thành công!'
-                      : 'Đã quét khuôn mặt từ nhiều góc thành công!',
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 20),
-                widget.isIdentifying
-                    ? const Text(
-                        'Hệ thống sẽ tìm kiếm User Information dựa trên khuôn mặt.',
-                        style: TextStyle(fontSize: 16),
-                        textAlign: TextAlign.center,
-                      )
-                    : Column(
-                        children: [
-                          Text(
-                            'Đã quét được ${_faceDataFromAngles.length} góc khuôn mặt. Bạn có muốn sử dụng khuôn mặt này để đăng ký không?',
-                            style: const TextStyle(fontSize: 16),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.blue.shade200),
-                            ),
-                            child: const Text(
-                              'Việc quét nhiều góc giúp tăng độ chính xác khi nhận diện khuôn mặt người châu Á',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontStyle: FontStyle.italic,
-                                color: Colors.blue,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ],
-                      ),
-                const SizedBox(height: 20),
-
-                // CCCD input field for identification mode
-                if (widget.isIdentifying)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 20.0, vertical: 10.0),
-                    child: TextFormField(
-                      controller: _cccdController,
-                      decoration: const InputDecoration(
-                        labelText: 'CCCD/CMND (Nếu có)',
-                        hintText: 'Nhập CCCD để tìm kiếm chính xác hơn',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-
-                const SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _retryFaceDetection,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Thử lại'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.grey,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 12),
-                      ),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _confirmFaceDetection,
-                      icon: const Icon(Icons.check),
-                      label: const Text('Xác nhận'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    // Otherwise show the camera UI
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.isIdentifying
-            ? 'Quét khuôn mặt để điểm danh'
-            : 'Quét khuôn mặt để đăng ký điểm danh'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            // Return false to indicate scan was cancelled
-            Navigator.pop(context, false);
-          },
-        ),
+        title: Text(
+            widget.isIdentifying ? 'Xác thực khuôn mặt' : 'Đăng ký khuôn mặt'),
+        backgroundColor: Colors.blue,
       ),
-      body: _isCameraInitialized &&
-              _controller != null &&
-              _controller!.value.isInitialized
-          ? Stack(
-              fit: StackFit.expand,
-              children: [
-                CameraPreview(_controller!),
-                // Face outline guide
-                Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        width: 250,
-                        height: 350,
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                              color:
-                                  _faceDetected ? Colors.green : Colors.yellow,
-                              width: 3),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      Column(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              _faceDetected
-                                  ? 'Khuôn mặt đã được nhận diện'
-                                  : 'Đặt khuôn mặt của bạn vào trong khung',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                  color: _faceDetected
-                                      ? Colors.greenAccent
-                                      : Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          // Progress indicator
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: FaceAngle.values.map((angle) {
-                              return Container(
-                                margin:
-                                    const EdgeInsets.symmetric(horizontal: 4),
-                                width: 20,
-                                height: 20,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: _angleDetected[angle]!
-                                      ? Colors.green
-                                      : (angle == _currentRequestedAngle
-                                          ? Colors.yellow
-                                          : Colors.grey),
-                                ),
-                                child: _angleDetected[angle]!
-                                    ? const Icon(Icons.check,
-                                        size: 16, color: Colors.white)
-                                    : null,
-                              );
-                            }).toList(),
-                          ),
+      body: Stack(
+        children: [
+          // Camera preview - only show when controller is valid and initialized
+          _isCameraInitialized && 
+          _controller != null && 
+          _controller!.value.isInitialized &&
+          !_isNavigating
+              ? Center(
+                  child: Builder(
+                    builder: (context) {
+                      try {
+                        return CameraPreview(_controller!);
+                      } catch (e) {
+                        print("Error building CameraPreview: $e");
+                        return const Center(
+                          child: Text("Camera preview unavailable", 
+                            style: TextStyle(color: Colors.white)),
+                        );
+                      }
+                    },
+                  ),
+                )
+              : const Center(
+                  child: CircularProgressIndicator(),
+                ),
 
-                          // Only show angle instructions for registration mode
-                          if (!widget.isIdentifying) ...[
-                            const SizedBox(height: 10),
-                            // Current angle instruction
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 20, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: Colors.blue.withOpacity(0.7),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  _getAngleIcon(_currentRequestedAngle),
-                                  const SizedBox(width: 10),
-                                  Text(
-                                    _getAngleInstruction(
-                                        _currentRequestedAngle),
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
-                  ),
+          // Face detection overlay
+          if (_isCameraInitialized)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: FaceOverlayPainter(
+                  faceDetected: _faceDetected,
+                  currentAngle: _currentRequestedAngle,
+                  isIdentifying: widget.isIdentifying,
                 ),
-                // Top instruction panel
-                Positioned(
-                  top: 20,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 20),
-                    padding: const EdgeInsets.all(15),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Column(
-                      children: [
-                        Text(
-                          widget.isIdentifying
-                              ? 'Hướng dẫn quét khuôn mặt để điểm danh'
-                              : 'Hướng dẫn quét khuôn mặt',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          widget.isIdentifying
-                              ? '1. Đảm bảo khuôn mặt nằm trong khung vàng\n'
-                                  '2. Giữ điện thoại cách mặt 30-50cm\n'
-                                  '3. Chỉ cần nhìn thẳng vào camera\n'
-                                  '4. Đảm bảo ánh sáng đủ sáng\n'
-                                  '5. Tháo kính, khẩu trang nếu có'
-                              : '1. Đảm bảo khuôn mặt nằm trong khung vàng\n'
-                                  '2. Giữ điện thoại cách mặt 30-50cm\n'
-                                  '3. Làm theo hướng dẫn quay mặt các góc\n'
-                                  '4. Đảm bảo ánh sáng đủ sáng\n'
-                                  '5. Tháo kính, khẩu trang nếu có\n'
-                                  '6. Giữ nét mặt tự nhiên',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                // Status message at bottom
-                Positioned(
-                  bottom: 20,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    color: Colors.black54,
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 12.0, horizontal: 20.0),
-                    child: Text(
-                      _isDetecting
-                          ? 'Đang nhận diện khuôn mặt...'
-                          : _faceDetected
-                              ? 'Khuôn mặt đã được nhận diện!'
-                              : 'Đang chuẩn bị camera...',
+              ),
+            ),
+
+          // Angle instruction text
+          if (_isCameraInitialized && !_showConfirmation)
+            Positioned(
+              top: 20,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                color: Colors.black54,
+                child: Column(
+                  children: [
+                    Text(
+                      _getInstructionText(),
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: _faceDetected
-                            ? Colors.greenAccent
-                            : _isDetecting
-                                ? Colors.yellowAccent
-                                : Colors.white,
-                        fontSize: 16,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _getDetailedInstructionText(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Progress indicator
+                    if (!widget.isIdentifying) // Only show for registration
+                      LinearProgressIndicator(
+                        value: _totalAnglesDetected / _totalRequiredAngles,
+                        backgroundColor: Colors.grey,
+                        valueColor:
+                            const AlwaysStoppedAnimation<Color>(Colors.green),
+                      ),
+                    if (!widget.isIdentifying)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Đã quét $_totalAnglesDetected/$_totalRequiredAngles góc',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Processing indicator when all angles are detected
+          if (_showConfirmation)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: const Center(
+                  child: Card(
+                    margin: EdgeInsets.all(16),
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Đã quét xong tất cả các góc',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          SizedBox(height: 16),
+                          Text(
+                            'Đang xử lý dữ liệu khuôn mặt...',
+                            textAlign: TextAlign.center,
+                          ),
+                          SizedBox(height: 16),
+                          CircularProgressIndicator(),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ],
-            )
-          : const Center(child: CircularProgressIndicator()),
+              ),
+            ),
+        ],
+      ),
     );
+  }
+
+  // Get instruction text based on current angle
+  String _getInstructionText() {
+    switch (_currentRequestedAngle) {
+      case FaceAngle.front:
+        return 'Nhìn thẳng vào camera';
+      case FaceAngle.left:
+        return 'Xoay mặt sang trái';
+      case FaceAngle.right:
+        return 'Xoay mặt sang phải';
+      case FaceAngle.up:
+        return 'Ngẩng mặt lên trên';
+      case FaceAngle.down:
+        return 'Cúi mặt xuống dưới';
+    }
+  }
+
+  // Get detailed instruction text based on current angle
+  String _getDetailedInstructionText() {
+    switch (_currentRequestedAngle) {
+      case FaceAngle.front:
+        return 'Giữ khuôn mặt trong khung và nhìn thẳng vào camera';
+      case FaceAngle.left:
+        return 'Từ từ xoay mặt sang bên trái khoảng 45 độ';
+      case FaceAngle.right:
+        return 'Từ từ xoay mặt sang bên phải khoảng 45 độ';
+      case FaceAngle.up:
+        return 'Ngẩng cằm lên trên và nhìn lên trần nhà (không chỉ di chuyển mắt)';
+      case FaceAngle.down:
+        return 'Cúi cằm xuống dưới như nhìn xuống sàn nhà (không chỉ di chuyển mắt)';
+      default:
+        return '';
+    }
+  }
+}
+
+// Face overlay painter
+class FaceOverlayPainter extends CustomPainter {
+  final bool faceDetected;
+  final FaceAngle currentAngle;
+  final bool isIdentifying;
+
+  FaceOverlayPainter({
+    required this.faceDetected,
+    required this.currentAngle,
+    required this.isIdentifying,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double centerX = size.width / 2;
+    final double centerY = size.height / 2;
+    final double radius = size.width * 0.4; // Oval size
+
+    // Draw face outline
+    final Paint outlinePaint = Paint()
+      ..color = faceDetected ? Colors.green : Colors.red
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0;
+
+    // Draw oval for face positioning
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(centerX, centerY),
+        width: radius * 1.5,
+        height: radius * 1.8,
+      ),
+      outlinePaint,
+    );
+
+    // Draw angle indicator
+    final Paint anglePaint = Paint()
+      ..color = Colors.blue
+      ..style = PaintingStyle.fill;
+
+    // Draw angle indicator based on current requested angle
+    switch (currentAngle) {
+      case FaceAngle.front:
+        // Center dot
+        canvas.drawCircle(
+          Offset(centerX, centerY),
+          10,
+          anglePaint,
+        );
+        break;
+      case FaceAngle.left:
+        // Left arrow - pointing outward to indicate turning left
+        final Path path = Path()
+          ..moveTo(centerX - radius / 2, centerY)
+          ..lineTo(centerX - radius / 3, centerY - 15)
+          ..lineTo(centerX - radius / 3, centerY + 15)
+          ..close();
+        canvas.drawPath(path, anglePaint);
+        break;
+      case FaceAngle.right:
+        // Right arrow
+        final Path path = Path()
+          ..moveTo(centerX + radius / 2, centerY)
+          ..lineTo(centerX + radius / 4, centerY - 15)
+          ..lineTo(centerX + radius / 4, centerY + 15)
+          ..close();
+        canvas.drawPath(path, anglePaint);
+        break;
+      case FaceAngle.up:
+        // Enhanced up arrow with visual guide for chin movement - OUTSIDE the face oval
+        // Draw larger, more prominent up arrow
+        final Paint arrowPaint = Paint()
+          ..color = Colors.red // More attention-grabbing color
+          ..style = PaintingStyle.fill;
+          
+        final Path arrowPath = Path()
+          ..moveTo(centerX, centerY - radius * 1.2) // Arrow tip further up, outside oval
+          ..lineTo(centerX - 30, centerY - radius * 0.8) // Wider arrow
+          ..lineTo(centerX + 30, centerY - radius * 0.8) // Wider arrow
+          ..close();
+        canvas.drawPath(arrowPath, arrowPaint);
+        
+        // Draw chin movement guide
+        final Paint guidePaint = Paint()
+          ..color = Colors.yellow
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.0; // Thicker line
+          
+        // Draw curved line to indicate chin movement - more pronounced curve
+        final Path guidePath = Path()
+          ..moveTo(centerX - 50, centerY + 30) // Start further out
+          ..quadraticBezierTo(
+              centerX, centerY - 60, // Control point further above
+              centerX + 50, centerY + 30 // End further out
+              );
+        canvas.drawPath(guidePath, guidePaint);
+        
+        // Add more prominent text label
+        final TextPainter textPainter = TextPainter(
+          text: const TextSpan(
+            text: 'NGẨNG CẰM LÊN',
+            style: TextStyle(
+              color: Colors.red,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black54,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+        
+        // Draw text background for better visibility
+        final Paint textBgPaint = Paint()
+          ..color = Colors.black54
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(
+            Rect.fromLTWH(
+                centerX - textPainter.width / 2 - 5,
+                centerY - radius * 1.2 - 45,
+                textPainter.width + 10,
+                textPainter.height + 6),
+            textBgPaint);
+        
+        // Position text above the arrow, outside the oval
+        textPainter.paint(
+            canvas,
+            Offset(
+                centerX - textPainter.width / 2, centerY - radius * 1.2 - 40));
+        
+        // Add additional instruction text
+        final TextPainter instructionPainter = TextPainter(
+          text: const TextSpan(
+            text: 'Nhìn lên trần nhà',
+            style: TextStyle(
+              color: Colors.yellow,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        instructionPainter.layout();
+        instructionPainter.paint(
+            canvas,
+            Offset(centerX - instructionPainter.width / 2,
+                centerY - radius * 1.2 - 70));
+        break;
+      case FaceAngle.down:
+        // Enhanced down arrow with visual guide for chin movement - OUTSIDE the face oval
+        // Draw larger, more prominent down arrow
+        final Paint arrowPaint = Paint()
+          ..color = Colors.red // More attention-grabbing color
+          ..style = PaintingStyle.fill;
+          
+        final Path arrowPath = Path()
+          ..moveTo(centerX, centerY + radius * 1.2) // Arrow tip further down, outside oval
+          ..lineTo(centerX - 30, centerY + radius * 0.8) // Wider arrow
+          ..lineTo(centerX + 30, centerY + radius * 0.8) // Wider arrow
+          ..close();
+        canvas.drawPath(arrowPath, arrowPaint);
+        
+        // Draw chin movement guide
+        final Paint guidePaint = Paint()
+          ..color = Colors.yellow
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.0; // Thicker line
+          
+        // Draw curved line to indicate chin movement - more pronounced curve
+        final Path guidePath = Path()
+          ..moveTo(centerX - 50, centerY - 30) // Start further out
+          ..quadraticBezierTo(
+              centerX, centerY + 60, // Control point further below
+              centerX + 50, centerY - 30 // End further out
+              );
+        canvas.drawPath(guidePath, guidePaint);
+        
+        // Add more prominent text label
+        final TextPainter textPainter = TextPainter(
+          text: const TextSpan(
+            text: 'CÚI CẰM XUỐNG',
+            style: TextStyle(
+              color: Colors.red,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black54,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+        
+        // Draw text background for better visibility
+        final Paint textBgPaint = Paint()
+          ..color = Colors.black54
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(
+            Rect.fromLTWH(
+                centerX - textPainter.width / 2 - 5,
+                centerY + radius * 1.2 + 10,
+                textPainter.width + 10,
+                textPainter.height + 6),
+            textBgPaint);
+        
+        // Position text below the arrow, outside the oval
+        textPainter.paint(
+            canvas,
+            Offset(
+                centerX - textPainter.width / 2, centerY + radius * 1.2 + 15));
+        
+        // Add additional instruction text
+        final TextPainter instructionPainter = TextPainter(
+          text: const TextSpan(
+            text: 'Nhìn xuống sàn nhà',
+            style: TextStyle(
+              color: Colors.yellow,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        instructionPainter.layout();
+        instructionPainter.paint(
+            canvas,
+            Offset(centerX - instructionPainter.width / 2,
+                centerY + radius * 1.2 + 45));
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(FaceOverlayPainter oldDelegate) {
+    return faceDetected != oldDelegate.faceDetected ||
+        currentAngle != oldDelegate.currentAngle;
   }
 }

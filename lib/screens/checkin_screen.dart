@@ -242,9 +242,11 @@ class _CheckinScreenState extends State<CheckinScreen> {
             _faceRecognitionService.stringToEmbedding(storedFaceData);
 
         // Use the face recognition service to compare embeddings
-        // Lower threshold (0.65) for Asian faces to improve recognition
-        return _faceRecognitionService
-            .isFaceMatch(scannedEmbedding, storedEmbedding, threshold: 0.65);
+        // Lower threshold (0.60) for Asian faces to improve recognition
+        final similarity = _faceRecognitionService.compareFaces(scannedEmbedding, storedEmbedding);
+        print('[leduytuanvu] Embedding similarity: $similarity');
+        
+        return similarity >= 0.60; // Lower threshold for better matching
       }
 
       // Fallback to dimension-based comparison for legacy data
@@ -261,13 +263,50 @@ class _CheckinScreenState extends State<CheckinScreen> {
 
         double scannedHeight = double.parse(scannedParts[4]);
         double storedHeight = double.parse(storedParts[4]);
+        
+        double scannedY = double.parse(scannedParts[5]);
+        double storedY = double.parse(storedParts[5]);
+        
+        double scannedZ = double.parse(scannedParts[6]);
+        double storedZ = double.parse(storedParts[6]);
 
         // Calculate differences with increased tolerance for Asian faces
         double widthDiff = (scannedWidth - storedWidth).abs();
         double heightDiff = (scannedHeight - storedHeight).abs();
-
-        // Using a larger tolerance for better matching of Asian faces
-        return widthDiff < 25.0 && heightDiff < 25.0;
+        
+        // Calculate size similarity
+        double sizeRatio = (scannedWidth * scannedHeight) / (storedWidth * storedHeight);
+        if (sizeRatio > 1.0) sizeRatio = 1.0 / sizeRatio;
+        
+        // Calculate position similarity
+        double leftDiff = (double.parse(scannedParts[1]) - double.parse(storedParts[1])).abs();
+        double topDiff = (double.parse(scannedParts[2]) - double.parse(storedParts[2])).abs();
+        
+        // Calculate angle similarity
+        double yDiff = (scannedY - storedY).abs();
+        double zDiff = (scannedZ - storedZ).abs();
+        
+        // Print detailed matching info for debugging
+        print('[leduytuanvu] Geometric matching details:');
+        print('[leduytuanvu] Width diff: $widthDiff, Height diff: $heightDiff');
+        print('[leduytuanvu] Size ratio: $sizeRatio');
+        print('[leduytuanvu] Position diff: Left=$leftDiff, Top=$topDiff');
+        print('[leduytuanvu] Angle diff: Y=$yDiff, Z=$zDiff');
+        
+        // Using a more sophisticated matching algorithm for Asian faces
+        // Size similarity is most important, followed by position, then angles
+        bool isSizeSimilar = sizeRatio > 0.7 && widthDiff < 40.0 && heightDiff < 40.0;
+        bool isPositionSimilar = leftDiff < 100.0 && topDiff < 100.0;
+        bool isAngleSimilar = yDiff < 120.0 && zDiff < 100.0;
+        
+        // Combined similarity score
+        double combinedScore = (isSizeSimilar ? 0.6 : 0.0) + 
+                              (isPositionSimilar ? 0.3 : 0.0) + 
+                              (isAngleSimilar ? 0.1 : 0.0);
+        
+        print('[leduytuanvu] Combined geometric score: $combinedScore');
+        
+        return combinedScore >= 0.6; // 60% similarity is enough
       }
 
       // If format is unknown, return false

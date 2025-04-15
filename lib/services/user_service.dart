@@ -145,7 +145,7 @@ class UserService {
   static Future<User?> findUserByFaceDataMultiMethod(
     String faceData,
     List<List<double>>? faceEmbeddings,
-    {String? cccd, double threshold = 0.70, double geometricThreshold = 0.65}
+    {String? cccd, double threshold = 0.65, double geometricThreshold = 0.60}
   ) async {
     try {
       // If CCCD is provided, try to find the user by CCCD first
