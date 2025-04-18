@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:attendance_app/services/face_recognition_service.dart';
 import 'package:camera/camera.dart';
@@ -31,7 +30,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   int _detectionCount = 0;
   static const int _requiredDetections = 3; // Detections needed per angle
   final bool _showConfirmation = false;
-  
+
   // Flag to track if we're in the process of navigating away
   bool _isNavigating = false;
 
@@ -62,7 +61,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   int _totalAnglesDetected = 0;
   int _totalRequiredAngles =
       5; // All 5 angles for registration, 3 for identification
-      
+
   // Face recognition service
   final FaceRecognitionService _faceRecognitionService =
       FaceRecognitionService();
@@ -438,9 +437,11 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         (faceAspectRatioChange < -0.15); // Face gets taller when looking up
 
     // Make looking down detection more sensitive
-    final isLookingDown = (zAngle > 3) || // More sensitive angle detection (was 5)
+    final isLookingDown = (zAngle >
+            3) || // More sensitive angle detection (was 5)
         (normalizedTop < 0.35) || // More sensitive position threshold (was 0.3)
-        (faceAspectRatioChange > 0.1) || // More sensitive aspect ratio change (was 0.15)
+        (faceAspectRatioChange >
+            0.1) || // More sensitive aspect ratio change (was 0.15)
         (xAngle > 8); // Also use X angle if available
 
     // Print detailed debug info for angle detection
@@ -503,11 +504,13 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       case FaceAngle.down:
         // Down angle detection - use multiple indicators with more sensitive thresholds
         return isLookingDown ||
-            (zAngle > 2 && normalizedTop < 0.45) || // More sensitive combined conditions
-            (faceAspectRatioChange > 0.05 && normalizedTop < 0.5) || // More sensitive combination
+            (zAngle > 2 &&
+                normalizedTop < 0.45) || // More sensitive combined conditions
+            (faceAspectRatioChange > 0.05 &&
+                normalizedTop < 0.5) || // More sensitive combination
             (xAngle > 5); // Also use X angle if available
     }
-    
+
     // Default fallback (should never reach here)
     return false;
   }
@@ -518,7 +521,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     setState(() {
       _isNavigating = true;
     });
-    
+
     try {
       // Safely stop detection and camera
       try {
@@ -569,7 +572,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
               Navigator.of(context).pop(resultData);
             } catch (e) {
               print("Navigation failed: $e");
-              
+
               // Try again with a post-frame callback
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) {
@@ -619,7 +622,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   // Get a single camera image for processing - optimized to reduce freezing
   Future<CameraImage?> _getCameraImage() async {
-    if (_controller == null || !_controller!.value.isInitialized || _isNavigating) {
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isNavigating) {
       print("Camera not initialized for image capture");
       return null;
     }
@@ -877,9 +882,10 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       _faceDataFromAngles.add(faceData['fallbackData']);
     }
 
-    print("Stored face data for angle: $angle - Success: ${faceData['success']}");
+    print(
+        "Stored face data for angle: $angle - Success: ${faceData['success']}");
   }
-  
+
   // Move to the next angle or complete if all angles are detected
   void _moveToNextAngle() {
     // For registration, require all 5 angles to be detected
@@ -961,7 +967,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       }
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -973,10 +979,10 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       body: Stack(
         children: [
           // Camera preview - only show when controller is valid and initialized
-          _isCameraInitialized && 
-          _controller != null && 
-          _controller!.value.isInitialized &&
-          !_isNavigating
+          _isCameraInitialized &&
+                  _controller != null &&
+                  _controller!.value.isInitialized &&
+                  !_isNavigating
               ? Center(
                   child: Builder(
                     builder: (context) {
@@ -985,8 +991,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                       } catch (e) {
                         print("Error building CameraPreview: $e");
                         return const Center(
-                          child: Text("Camera preview unavailable", 
-                            style: TextStyle(color: Colors.white)),
+                          child: Text("Camera preview unavailable",
+                              style: TextStyle(color: Colors.white)),
                         );
                       }
                     },
@@ -1178,30 +1184,141 @@ class FaceOverlayPainter extends CustomPainter {
     // Draw angle indicator based on current requested angle
     switch (currentAngle) {
       case FaceAngle.front:
-        // Center dot
+        // Center dot - placed outside the oval at the top
         canvas.drawCircle(
-          Offset(centerX, centerY),
-          10,
-          anglePaint,
+          Offset(centerX, centerY - radius * 1.2),
+          15,
+          anglePaint..color = Colors.red,
         );
+
+        // Add text label
+        final TextPainter textPainter = TextPainter(
+          text: const TextSpan(
+            text: 'NHÌN THẲNG',
+            style: TextStyle(
+              color: Colors.red,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black54,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+
+        // Draw text background for better visibility
+        final Paint textBgPaint = Paint()
+          ..color = Colors.black54
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(
+            Rect.fromLTWH(
+                centerX - textPainter.width / 2 - 5,
+                centerY - radius * 1.2 - 45,
+                textPainter.width + 10,
+                textPainter.height + 6),
+            textBgPaint);
+
+        // Position text above the dot
+        textPainter.paint(
+            canvas,
+            Offset(
+                centerX - textPainter.width / 2, centerY - radius * 1.2 - 40));
         break;
+
       case FaceAngle.left:
-        // Left arrow - pointing outward to indicate turning left
-        final Path path = Path()
-          ..moveTo(centerX - radius / 2, centerY)
-          ..lineTo(centerX - radius / 3, centerY - 15)
-          ..lineTo(centerX - radius / 3, centerY + 15)
+        // Left arrow - placed completely outside the oval
+        final Paint arrowPaint = Paint()
+          ..color = Colors.red
+          ..style = PaintingStyle.fill;
+
+        final Path arrowPath = Path()
+          ..moveTo(centerX - radius * 1.2,
+              centerY) // Arrow tip further left, outside oval
+          ..lineTo(centerX - radius * 0.8, centerY - 30) // Wider arrow
+          ..lineTo(centerX - radius * 0.8, centerY + 30) // Wider arrow
           ..close();
-        canvas.drawPath(path, anglePaint);
+        canvas.drawPath(arrowPath, arrowPaint);
+
+        // Add text label
+        final TextPainter textPainter = TextPainter(
+          text: const TextSpan(
+            text: 'PHẢI',
+            style: TextStyle(
+              color: Colors.red,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black54,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+
+        // Draw text background for better visibility
+        final Paint textBgPaint = Paint()
+          ..color = Colors.black54
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(
+            Rect.fromLTWH(
+                centerX - radius * 1.2 - textPainter.width / 2 - 5 + 20,
+                centerY - 70,
+                textPainter.width + 10,
+                textPainter.height + 6),
+            textBgPaint);
+
+        // Position text to the left of the arrow
+        textPainter.paint(
+            canvas,
+            Offset(centerX - radius * 1.2 - textPainter.width / 2 + 20,
+                centerY - 65));
         break;
+
       case FaceAngle.right:
-        // Right arrow
-        final Path path = Path()
-          ..moveTo(centerX + radius / 2, centerY)
-          ..lineTo(centerX + radius / 4, centerY - 15)
-          ..lineTo(centerX + radius / 4, centerY + 15)
+        // Right arrow - placed completely outside the oval
+        final Paint arrowPaint = Paint()
+          ..color = Colors.red
+          ..style = PaintingStyle.fill;
+
+        final Path arrowPath = Path()
+          ..moveTo(centerX + radius * 1.2,
+              centerY) // Arrow tip further right, outside oval
+          ..lineTo(centerX + radius * 0.8, centerY - 30) // Wider arrow
+          ..lineTo(centerX + radius * 0.8, centerY + 30) // Wider arrow
           ..close();
-        canvas.drawPath(path, anglePaint);
+        canvas.drawPath(arrowPath, arrowPaint);
+
+        // Add text label
+        final TextPainter textPainter = TextPainter(
+          text: const TextSpan(
+            text: 'TRÁI',
+            style: TextStyle(
+              color: Colors.red,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black54,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+
+        // Draw text background for better visibility
+        final Paint textBgPaint = Paint()
+          ..color = Colors.black54
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(
+            Rect.fromLTWH(
+                centerX + radius * 1.2 - textPainter.width / 2 - 5 - 20,
+                centerY - 70,
+                textPainter.width + 10,
+                textPainter.height + 6),
+            textBgPaint);
+
+        // Position text to the right of the arrow
+        textPainter.paint(
+            canvas,
+            Offset(centerX + radius * 1.2 - textPainter.width / 2 - 20,
+                centerY - 65));
         break;
       case FaceAngle.up:
         // Enhanced up arrow with visual guide for chin movement - OUTSIDE the face oval
@@ -1209,29 +1326,32 @@ class FaceOverlayPainter extends CustomPainter {
         final Paint arrowPaint = Paint()
           ..color = Colors.red // More attention-grabbing color
           ..style = PaintingStyle.fill;
-          
+
         final Path arrowPath = Path()
-          ..moveTo(centerX, centerY - radius * 1.2) // Arrow tip further up, outside oval
+          ..moveTo(centerX,
+              centerY - radius * 1.2) // Arrow tip further up, outside oval
           ..lineTo(centerX - 30, centerY - radius * 0.8) // Wider arrow
           ..lineTo(centerX + 30, centerY - radius * 0.8) // Wider arrow
           ..close();
         canvas.drawPath(arrowPath, arrowPaint);
-        
+
         // Draw chin movement guide
         final Paint guidePaint = Paint()
           ..color = Colors.yellow
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3.0; // Thicker line
-          
+
         // Draw curved line to indicate chin movement - more pronounced curve
         final Path guidePath = Path()
           ..moveTo(centerX - 50, centerY + 30) // Start further out
           ..quadraticBezierTo(
-              centerX, centerY - 60, // Control point further above
-              centerX + 50, centerY + 30 // End further out
+              centerX,
+              centerY - 60, // Control point further above
+              centerX + 50,
+              centerY + 30 // End further out
               );
         canvas.drawPath(guidePath, guidePaint);
-        
+
         // Add more prominent text label
         final TextPainter textPainter = TextPainter(
           text: const TextSpan(
@@ -1246,7 +1366,7 @@ class FaceOverlayPainter extends CustomPainter {
           textDirection: TextDirection.ltr,
         );
         textPainter.layout();
-        
+
         // Draw text background for better visibility
         final Paint textBgPaint = Paint()
           ..color = Colors.black54
@@ -1258,13 +1378,13 @@ class FaceOverlayPainter extends CustomPainter {
                 textPainter.width + 10,
                 textPainter.height + 6),
             textBgPaint);
-        
+
         // Position text above the arrow, outside the oval
         textPainter.paint(
             canvas,
             Offset(
                 centerX - textPainter.width / 2, centerY - radius * 1.2 - 40));
-        
+
         // Add additional instruction text
         final TextPainter instructionPainter = TextPainter(
           text: const TextSpan(
@@ -1289,29 +1409,32 @@ class FaceOverlayPainter extends CustomPainter {
         final Paint arrowPaint = Paint()
           ..color = Colors.red // More attention-grabbing color
           ..style = PaintingStyle.fill;
-          
+
         final Path arrowPath = Path()
-          ..moveTo(centerX, centerY + radius * 1.2) // Arrow tip further down, outside oval
+          ..moveTo(centerX,
+              centerY + radius * 1.2) // Arrow tip further down, outside oval
           ..lineTo(centerX - 30, centerY + radius * 0.8) // Wider arrow
           ..lineTo(centerX + 30, centerY + radius * 0.8) // Wider arrow
           ..close();
         canvas.drawPath(arrowPath, arrowPaint);
-        
+
         // Draw chin movement guide
         final Paint guidePaint = Paint()
           ..color = Colors.yellow
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3.0; // Thicker line
-          
+
         // Draw curved line to indicate chin movement - more pronounced curve
         final Path guidePath = Path()
           ..moveTo(centerX - 50, centerY - 30) // Start further out
           ..quadraticBezierTo(
-              centerX, centerY + 60, // Control point further below
-              centerX + 50, centerY - 30 // End further out
+              centerX,
+              centerY + 60, // Control point further below
+              centerX + 50,
+              centerY - 30 // End further out
               );
         canvas.drawPath(guidePath, guidePaint);
-        
+
         // Add more prominent text label
         final TextPainter textPainter = TextPainter(
           text: const TextSpan(
@@ -1326,7 +1449,7 @@ class FaceOverlayPainter extends CustomPainter {
           textDirection: TextDirection.ltr,
         );
         textPainter.layout();
-        
+
         // Draw text background for better visibility
         final Paint textBgPaint = Paint()
           ..color = Colors.black54
@@ -1338,13 +1461,13 @@ class FaceOverlayPainter extends CustomPainter {
                 textPainter.width + 10,
                 textPainter.height + 6),
             textBgPaint);
-        
+
         // Position text below the arrow, outside the oval
         textPainter.paint(
             canvas,
             Offset(
                 centerX - textPainter.width / 2, centerY + radius * 1.2 + 15));
-        
+
         // Add additional instruction text
         final TextPainter instructionPainter = TextPainter(
           text: const TextSpan(

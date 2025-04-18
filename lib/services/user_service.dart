@@ -98,14 +98,15 @@ class UserService {
       return null;
     }
   }
-  
+
   // Find a user by face data using geometric matching
   // This is used when the TFLite model fails to load
-  static Future<User?> findUserByGeometricFaceMatch(String faceData, {double threshold = 0.65}) async {
+  static Future<User?> findUserByGeometricFaceMatch(String faceData,
+      {double threshold = 0.94}) async {
     try {
       print('[leduytuanvu] Finding user by geometric face match');
       List<User> users = await getUsers();
-      
+
       // Create a map of user IDs to face data strings for all users
       Map<String, String> registeredFaceData = {};
       for (User user in users) {
@@ -113,17 +114,15 @@ class UserService {
           registeredFaceData[user.cccd] = user.faceData!;
         }
       }
-      
+
       // Use the FaceRecognitionService to find the best geometric match
       final faceRecognitionService = FaceRecognitionService();
       final matchResult = faceRecognitionService.findBestGeometricMatch(
-        faceData, 
-        registeredFaceData,
-        threshold: threshold
-      );
-      
+          faceData, registeredFaceData,
+          threshold: threshold);
+
       print('[leduytuanvu] Geometric match result: $matchResult');
-      
+
       // If a match was found, return the corresponding user
       if (matchResult['isMatch']) {
         String matchId = matchResult['matchId'];
@@ -132,21 +131,21 @@ class UserService {
           orElse: () => throw Exception('Matched user not found'),
         );
       }
-      
+
       return null;
     } catch (e) {
       print('Error finding user by geometric face match: $e');
       return null;
     }
   }
-  
+
   // Find a user by face data using multiple methods
   // This tries both embedding-based and geometric matching
   static Future<User?> findUserByFaceDataMultiMethod(
-    String faceData,
-    List<List<double>>? faceEmbeddings,
-    {String? cccd, double threshold = 0.65, double geometricThreshold = 0.60}
-  ) async {
+      String faceData, List<List<double>>? faceEmbeddings,
+      {String? cccd,
+      double threshold = 0.94,
+      double geometricThreshold = 0.94}) async {
     try {
       // If CCCD is provided, try to find the user by CCCD first
       if (cccd != null && cccd.isNotEmpty) {
@@ -156,27 +155,30 @@ class UserService {
           return userByCCCD;
         }
       }
-      
+
       // If embeddings are provided, try to find the user by embeddings
       if (faceEmbeddings != null && faceEmbeddings.isNotEmpty) {
         final faceRecognitionService = FaceRecognitionService();
         List<User> users = await getUsers();
-        
+
         // For each user with face data, try to convert it to an embedding
         for (User user in users) {
           if (user.faceData == null) continue;
-          
+
           // Check if the user's face data is an embedding string
           if (user.faceData!.contains(',')) {
             try {
               // Convert the user's face data to an embedding
-              final userEmbedding = faceRecognitionService.stringToEmbedding(user.faceData!);
-              
+              final userEmbedding =
+                  faceRecognitionService.stringToEmbedding(user.faceData!);
+
               // Compare with each of the query embeddings
               for (final queryEmbedding in faceEmbeddings) {
-                final similarity = faceRecognitionService.compareFaces(queryEmbedding, userEmbedding);
-                print('[leduytuanvu] Embedding similarity with ${user.name}: $similarity');
-                
+                final similarity = faceRecognitionService.compareFaces(
+                    queryEmbedding, userEmbedding);
+                print(
+                    '[leduytuanvu] Embedding similarity with ${user.name}: $similarity');
+
                 if (similarity >= threshold) {
                   print('[leduytuanvu] User found by embedding: ${user.name}');
                   return user;
@@ -189,21 +191,23 @@ class UserService {
           }
         }
       }
-      
+
       // If no match found by embeddings, try geometric matching
-      final userByGeometric = await findUserByGeometricFaceMatch(faceData, threshold: geometricThreshold);
+      final userByGeometric = await findUserByGeometricFaceMatch(faceData,
+          threshold: geometricThreshold);
       if (userByGeometric != null) {
-        print('[leduytuanvu] User found by geometric matching: ${userByGeometric.name}');
+        print(
+            '[leduytuanvu] User found by geometric matching: ${userByGeometric.name}');
         return userByGeometric;
       }
-      
+
       // If still no match, try exact match as a last resort
       final userByExact = await findUserByFaceData(faceData);
       if (userByExact != null) {
         print('[leduytuanvu] User found by exact match: ${userByExact.name}');
         return userByExact;
       }
-      
+
       return null;
     } catch (e) {
       print('Error finding user by multi-method: $e');

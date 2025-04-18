@@ -171,6 +171,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // Option to navigate to CheckinScreen
       showDialog(
         context: context,
+        barrierDismissible: false,
         builder: (BuildContext context) {
           return AlertDialog(
             title: const Text('Đăng ký thành công'),
